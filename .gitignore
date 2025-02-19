@@ -1,0 +1,17 @@
+# datasets
+# task1
+task1/sentiment-analysis-on-movie-reviews/
+
+# task3
+task3/snli_1.0/
+
+# task4
+task4/ner/
+
+# task5
+task5/poetryFromTang.txt
+
+# pretrained models
+# task2
+task2/glove/
+
