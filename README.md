@@ -10,10 +10,6 @@
 2. 《[神经网络与深度学习](https://nndl.github.io/)》 
 3. 不懂问google
 
-
-
-
-
 ### 任务一：基于机器学习的文本分类
 
 实现基于logistic/softmax regression的文本分类
