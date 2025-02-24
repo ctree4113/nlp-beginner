@@ -10,7 +10,7 @@
 
 ### 任务一：基于机器学习的文本分类
 
-实现基于logistic/softmax regression的文本分类
+实现基于 logistic/softmax regression 的文本分类
 
 1. 参考
    1. [文本分类](文本分类.md)
@@ -28,7 +28,7 @@
 
 ### 任务二：基于深度学习的文本分类
 
-熟悉Pytorch，用Pytorch重写《任务一》，实现CNN、RNN的文本分类；
+熟悉 Pytorch，用 Pytorch 重写《任务一》，实现 CNN、RNN 的文本分类；
 
 1. 参考
    1. https://pytorch.org/
@@ -36,7 +36,7 @@
    3. <https://machinelearningmastery.com/sequence-classification-lstm-recurrent-neural-networks-python-keras/>
 2. word embedding 的方式初始化
    1. 随机 embedding 的初始化方式
-   2. 用 glove 预训练的embedding进行初始化 https://nlp.stanford.edu/projects/glove/
+   2. 用 glove 预训练的 embedding 进行初始化 https://nlp.stanford.edu/projects/glove/
 3. 知识点：
    1. CNN/RNN的特征抽取
    2. 词嵌入
@@ -45,7 +45,7 @@
 
 ### 任务三：基于注意力机制的文本匹配
 
-输入两个句子判断，判断它们之间的关系。参考[ESIM]( https://arxiv.org/pdf/1609.06038v3.pdf)（可以只用LSTM，忽略Tree-LSTM），用双向的注意力机制实现。
+输入两个句子判断，判断它们之间的关系。参考[ESIM]( https://arxiv.org/pdf/1609.06038v3.pdf)（可以只用 LSTM，忽略 Tree-LSTM），用双向的注意力机制实现。
 
 1. 参考
    1. 《[神经网络与深度学习](https://nndl.github.io/)》 第7章
@@ -61,7 +61,7 @@
 
 ### 任务四：基于LSTM+CRF的序列标注
 
-用LSTM+CRF来训练序列标注模型：以Named Entity Recognition为例。
+用 LSTM + CRF 来训练序列标注模型：以 Named Entity Recognition 为例。
 
 1. 参考
    1. 《[神经网络与深度学习](https://nndl.github.io/)》 第6、11章
@@ -76,7 +76,7 @@
 
 ### 任务五：基于神经网络的语言模型
 
-用LSTM、GRU来训练字符级的语言模型，计算困惑度
+用 LSTM、GRU 来训练字符级的语言模型，计算困惑度
 
 1. 参考
    1. 《[神经网络与深度学习](https://nndl.github.io/)》 第6、15章
