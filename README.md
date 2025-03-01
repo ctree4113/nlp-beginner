@@ -58,8 +58,7 @@
    2. token2token attetnion
 5. 时间：两周
 
-
-### 任务四：基于LSTM+CRF的序列标注
+### 任务四：基于 LSTM+CRF 的序列标注
 
 用 LSTM + CRF 来训练序列标注模型：以 Named Entity Recognition 为例。
 
