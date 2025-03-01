@@ -34,9 +34,9 @@ class Evaluator:
         accuracy = accuracy_score(y_true, y_pred)
         
         # For multi-class problems, use macro average
-        precision = precision_score(y_true, y_pred, average='macro')
-        recall = recall_score(y_true, y_pred, average='macro')
-        f1 = f1_score(y_true, y_pred, average='macro')
+        precision = precision_score(y_true, y_pred, average='macro', zero_division=0)
+        recall = recall_score(y_true, y_pred, average='macro', zero_division=0)
+        f1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
         
         # Return evaluation metrics
         metrics = {
