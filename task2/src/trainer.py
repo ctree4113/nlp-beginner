@@ -9,6 +9,7 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
+import shutil
 
 
 class Trainer:
@@ -52,92 +53,99 @@ class Trainer:
     def train(self, train_loader, valid_loader=None, test_loader=None, num_epochs=10, 
               patience=5, verbose=True, save_best=True):
         """
-        Train model
+        Train the model
         
         Args:
             train_loader: Training data loader
             valid_loader: Validation data loader
             test_loader: Test data loader
-            num_epochs: Number of training epochs
-            patience: Early stopping patience
-            verbose: Whether to print training progress
+            num_epochs: Number of epochs
+            patience: Patience for early stopping
+            verbose: Whether to print progress
             save_best: Whether to save the best model
-            
-        Returns:
-            Training history
         """
         # Move model to device
         self.model.to(self.device)
         
-        # Record best validation loss and epoch
+        # Initialize history
+        self.history = {
+            'train_loss': [],
+            'train_acc': [],
+            'valid_loss': [],
+            'valid_acc': [],
+            'test_loss': [],
+            'test_acc': []
+        }
+        
+        # Initialize best validation loss
         best_valid_loss = float('inf')
         best_epoch = 0
         
-        # Record start time
-        start_time = time.time()
+        # Initialize early stopping counter
+        early_stop_counter = 0
         
-        # Training loop
-        for epoch in range(num_epochs):
-            # Train one epoch
+        # Start training
+        start_time = time.time()
+        for epoch in range(1, num_epochs + 1):
+            # Train
             train_loss, train_acc = self._train_epoch(train_loader)
-            
-            # Record training loss and accuracy
             self.history['train_loss'].append(train_loss)
             self.history['train_acc'].append(train_acc)
             
-            # Evaluate on validation set
+            # Validate
+            valid_loss, valid_acc = 0, 0
             if valid_loader is not None:
                 valid_loss, valid_acc = self._evaluate(valid_loader)
                 self.history['valid_loss'].append(valid_loss)
                 self.history['valid_acc'].append(valid_acc)
-            else:
-                valid_loss, valid_acc = None, None
             
-            # Evaluate on test set
+            # Test
+            test_loss, test_acc = 0, 0
             if test_loader is not None:
                 test_loss, test_acc = self._evaluate(test_loader)
                 self.history['test_loss'].append(test_loss)
                 self.history['test_acc'].append(test_acc)
-            else:
-                test_loss, test_acc = None, None
             
             # Update learning rate
             if self.scheduler is not None:
-                if isinstance(self.scheduler, optim.lr_scheduler.ReduceLROnPlateau):
+                if isinstance(self.scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                     self.scheduler.step(valid_loss)
                 else:
                     self.scheduler.step()
             
-            # Print training progress
+            # Print progress
             if verbose:
-                elapsed_time = time.time() - start_time
-                print(f'Epoch {epoch+1}/{num_epochs} - Time: {elapsed_time:.2f}s')
-                print(f'  Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}')
+                epoch_time = time.time() - start_time
+                print(f"Epoch {epoch}/{num_epochs} - Time: {epoch_time:.2f}s")
+                print(f"  Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}")
                 if valid_loader is not None:
-                    print(f'  Valid Loss: {valid_loss:.4f}, Valid Acc: {valid_acc:.4f}')
+                    print(f"  Valid Loss: {valid_loss:.4f}, Valid Acc: {valid_acc:.4f}")
                 if test_loader is not None:
-                    print(f'  Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}')
+                    print(f"  Test Loss: {test_loss:.4f}, Test Acc: {test_acc:.4f}")
             
             # Save best model
-            if valid_loader is not None and save_best and valid_loss < best_valid_loss:
+            if save_best and valid_loader is not None and valid_loss < best_valid_loss:
                 best_valid_loss = valid_loss
                 best_epoch = epoch
                 self._save_model(os.path.join(self.output_dir, f'{self.model_name}_best.pt'))
+                early_stop_counter = 0
+            else:
+                early_stop_counter += 1
             
             # Early stopping
-            if valid_loader is not None and epoch - best_epoch >= patience:
-                print(f'Early stopping at epoch {epoch+1}')
+            if patience > 0 and early_stop_counter >= patience:
+                if verbose:
+                    print(f"Early stopping at epoch {epoch}")
                 break
-        
-        # Save last model
-        if save_best:
-            self._save_model(os.path.join(self.output_dir, f'{self.model_name}_last.pt'))
         
         # Save training history
         self._save_history()
         
-        # Plot training curves
+        # Plot training history
         self._plot_history()
+        
+        # Save final model
+        self._save_model(os.path.join(self.output_dir, f'{self.model_name}_final.pt'))
         
         return self.history
     
@@ -296,9 +304,9 @@ class Trainer:
         # Calculate metrics
         metrics = {
             'accuracy': accuracy_score(true_labels, predictions),
-            'precision': precision_score(true_labels, predictions, average='macro'),
-            'recall': recall_score(true_labels, predictions, average='macro'),
-            'f1': f1_score(true_labels, predictions, average='macro'),
+            'precision': precision_score(true_labels, predictions, average='macro', zero_division=0),
+            'recall': recall_score(true_labels, predictions, average='macro', zero_division=0),
+            'f1': f1_score(true_labels, predictions, average='macro', zero_division=0),
             'confusion_matrix': confusion_matrix(true_labels, predictions).tolist()
         }
         
@@ -336,48 +344,24 @@ class Trainer:
             json.dump(self.history, f, indent=4)
     
     def _plot_history(self):
-        """Plot training curves"""
-        # Create figure
-        plt.figure(figsize=(12, 4))
+        """
+        Return training history without plotting or saving
         
-        # Plot loss curves
-        plt.subplot(1, 2, 1)
-        plt.plot(self.history['train_loss'], label='Train Loss')
-        if 'valid_loss' in self.history and len(self.history['valid_loss']) > 0:
-            plt.plot(self.history['valid_loss'], label='Valid Loss')
-        if 'test_loss' in self.history and len(self.history['test_loss']) > 0:
-            plt.plot(self.history['test_loss'], label='Test Loss')
-        plt.xlabel('Epoch')
-        plt.ylabel('Loss')
-        plt.title('Loss Curves')
-        plt.legend()
-        plt.grid(True)
-        
-        # Plot accuracy curves
-        plt.subplot(1, 2, 2)
-        plt.plot(self.history['train_acc'], label='Train Acc')
-        if 'valid_acc' in self.history and len(self.history['valid_acc']) > 0:
-            plt.plot(self.history['valid_acc'], label='Valid Acc')
-        if 'test_acc' in self.history and len(self.history['test_acc']) > 0:
-            plt.plot(self.history['test_acc'], label='Test Acc')
-        plt.xlabel('Epoch')
-        plt.ylabel('Accuracy')
-        plt.title('Accuracy Curves')
-        plt.legend()
-        plt.grid(True)
-        
-        # Save figure
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, f'{self.model_name}_curves.png'))
-        plt.close()
+        Returns:
+            dict: Training history
+        """
+        return self.history
     
     def plot_confusion_matrix(self, data_loader, class_names=None):
         """
-        Plot confusion matrix
+        Calculate and return confusion matrix data without plotting or saving
         
         Args:
             data_loader: Data loader
             class_names: Class names
+            
+        Returns:
+            tuple: (confusion_matrix, class_names)
         """
         # Predict
         predictions, true_labels, _ = self.predict(data_loader)
@@ -385,18 +369,8 @@ class Trainer:
         # Calculate confusion matrix
         cm = confusion_matrix(true_labels, predictions)
         
-        # Plot confusion matrix
-        plt.figure(figsize=(10, 8))
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
-                   xticklabels=class_names, yticklabels=class_names)
-        plt.xlabel('Predicted')
-        plt.ylabel('True')
-        plt.title('Confusion Matrix')
-        
-        # Save figure
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, f'{self.model_name}_confusion_matrix.png'))
-        plt.close()
+        # Return the confusion matrix and class names for direct use
+        return cm, class_names
 
 
 class Evaluator:
@@ -438,6 +412,13 @@ class Evaluator:
         # Save metrics
         with open(os.path.join(self.output_dir, f'{trainer.model_name}_metrics.json'), 'w') as f:
             json.dump(metrics, f, indent=4)
+        
+        # Ensure confusion matrix is saved with standard name
+        cm_src = os.path.join(self.output_dir, f'{trainer.model_name}_confusion_matrix.png')
+        cm_dst = os.path.join(self.output_dir, 'confusion_matrices.png')
+        if os.path.exists(cm_src) and not os.path.exists(cm_dst):
+            shutil.copy(cm_src, cm_dst)
+            print(f"Saved confusion matrix as {cm_dst}")
         
         return metrics
     
