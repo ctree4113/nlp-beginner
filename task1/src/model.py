@@ -211,7 +211,7 @@ class LogisticRegression(BaseModel):
             return self._fit_binary(X, y, X_valid, y_valid, X_test, y_test)
         
         # For multi-class, use One-vs-Rest strategy
-        # 对于多分类，减少迭代次数以加快训练速度
+        # For multi-class, reduce iterations to speed up training
         ovr_iterations = max(200, self.num_iterations // self.n_classes)
         
         if self.verbose:
@@ -235,10 +235,10 @@ class LogisticRegression(BaseModel):
             # Create and train binary classifier
             binary_model = _BinaryLogisticRegression(
                 learning_rate=self.learning_rate,
-                num_iterations=ovr_iterations,  # 减少迭代次数
+                num_iterations=ovr_iterations,  # Reduce iterations per class
                 batch_size=self.batch_size,
                 random_state=self.random_state,
-                verbose=self.verbose,  # 传递 verbose 参数
+                verbose=self.verbose,  # Pass verbose parameter
                 regularization=self.regularization,
                 lambda_param=self.lambda_param,
                 batch_strategy=self.batch_strategy,
@@ -263,15 +263,15 @@ class LogisticRegression(BaseModel):
                 all_losses = binary_model.loss_history
             else:
                 # Average the losses
-                # 确保长度匹配
+                # Ensure matching lengths
                 min_len = min(len(all_losses), len(binary_model.loss_history))
                 all_losses = [(all_losses[i] + binary_model.loss_history[i]) / 2 for i in range(min_len)]
             
-            # 打印每个分类器的训练时间
+            # Print training time for each classifier
             if self.verbose:
                 class_time = time.time() - start_time
                 print(f"Classifier for class {cls} completed in {class_time:.2f}s")
-                # 显示已用时间和预计总时间
+                # Display elapsed time and estimated total time
                 if i > 0:
                     avg_time_per_class = class_time / (i + 1)
                     remaining_time = avg_time_per_class * (self.n_classes - i - 1)
@@ -280,36 +280,71 @@ class LogisticRegression(BaseModel):
         # Use the average loss across all binary classifiers
         self.loss_history = all_losses
         
-        # 简化评估频率，不需要对每个记录点都计算
+        # Record accuracy history during training
         self.train_accuracy_history = []
         self.valid_accuracy_history = []
         self.test_accuracy_history = []
         
-        # 只计算最终准确率
-        # Training accuracy
-        train_pred = self.predict(X)
-        train_acc = np.mean(train_pred == y)
-        self.train_accuracy_history.append(train_acc)
+        # For multi-class, record accuracy at each iteration interval
+        # Use the same recording interval as binary classifiers
+        if hasattr(self.models[0], 'record_interval'):
+            self.record_interval = self.models[0].record_interval
         
-        # Validation accuracy
-        if X_valid is not None and y_valid is not None:
-            valid_pred = self.predict(X_valid)
-            valid_acc = np.mean(valid_pred == y_valid)
-            self.valid_accuracy_history.append(valid_acc)
+        # Calculate accuracy at each recording point
+        num_records = len(self.models[0].loss_history)
+        for i in range(num_records):
+            # Iteration number corresponding to each recording point
+            iteration = i * self.record_interval if hasattr(self, 'record_interval') else i
+            
+            # Only record when all binary classifiers have trained to this iteration
+            if all(i < len(model.loss_history) for model in self.models):
+                # Use current weights for prediction
+                current_weights = [model.weights.copy() for model in self.models]
+                current_bias = [model.bias.copy() for model in self.models]
+                
+                # Training accuracy
+                train_pred = self._predict_with_weights(X, current_weights, current_bias)
+                train_acc = np.mean(train_pred == y)
+                self.train_accuracy_history.append(train_acc)
+                
+                # Validation accuracy
+                if X_valid is not None and y_valid is not None:
+                    valid_pred = self._predict_with_weights(X_valid, current_weights, current_bias)
+                    valid_acc = np.mean(valid_pred == y_valid)
+                    self.valid_accuracy_history.append(valid_acc)
+                
+                # Test accuracy
+                if X_test is not None and y_test is not None:
+                    test_pred = self._predict_with_weights(X_test, current_weights, current_bias)
+                    test_acc = np.mean(test_pred == y_test)
+                    self.test_accuracy_history.append(test_acc)
         
-        # Test accuracy
-        if X_test is not None and y_test is not None:
-            test_pred = self.predict(X_test)
-            test_acc = np.mean(test_pred == y_test)
-            self.test_accuracy_history.append(test_acc)
+        # If no accuracy history was recorded, at least record final accuracy
+        if not self.train_accuracy_history:
+            # Training accuracy
+            train_pred = self.predict(X)
+            train_acc = np.mean(train_pred == y)
+            self.train_accuracy_history.append(train_acc)
+            
+            # Validation accuracy
+            if X_valid is not None and y_valid is not None:
+                valid_pred = self.predict(X_valid)
+                valid_acc = np.mean(valid_pred == y_valid)
+                self.valid_accuracy_history.append(valid_acc)
+            
+            # Test accuracy
+            if X_test is not None and y_test is not None:
+                test_pred = self.predict(X_test)
+                test_acc = np.mean(test_pred == y_test)
+                self.test_accuracy_history.append(test_acc)
         
-        # Print final training information
+        # Print final accuracy
         if self.verbose:
-            elapsed_time = time.time() - start_time
-            print(f"\nTraining completed in {elapsed_time:.2f}s")
-            print(f"Final training accuracy: {train_acc:.4f}")
-            if X_valid is not None:
-                print(f"Final validation accuracy: {valid_acc:.4f}")
+            total_time = time.time() - start_time
+            print(f"\nTraining completed in {total_time:.2f}s")
+            print(f"Final training accuracy: {self.train_accuracy_history[-1]:.4f}")
+            if X_valid is not None and y_valid is not None:
+                print(f"Final validation accuracy: {self.valid_accuracy_history[-1]:.4f}")
         
         return self
     
@@ -443,6 +478,18 @@ class LogisticRegression(BaseModel):
             loss += (self.lambda_param / (2 * m)) * np.sum(np.square(self.weights))
         
         return loss
+    
+    def _predict_with_weights(self, X, weights, biases):
+        """Make predictions using specified weights and biases, used for recording accuracy during training"""
+        n_samples = X.shape[0]
+        scores = np.zeros((n_samples, self.n_classes))
+        
+        # Calculate scores for each class
+        for i, cls in enumerate(self.classes):
+            scores[:, i] = self._sigmoid(np.dot(X, weights[i]) + biases[i]).flatten()
+        
+        # Return class with highest score
+        return self.classes[np.argmax(scores, axis=1)]
 
 
 # Helper class for One-vs-Rest implementation

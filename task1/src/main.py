@@ -337,10 +337,11 @@ def run_comparison_experiment(args, param_name, param_values):
     plt.subplot(2, 1, 1)
     for name, model in models.items():
         # Sample loss history to avoid overcrowding
-        sample_rate = max(1, len(model.loss_history) // 100)
-        iterations = list(range(0, len(model.loss_history), sample_rate))
-        losses = [model.loss_history[i] for i in iterations]
-        plt.plot(iterations, losses, label=f"{param_name}={name}")
+        if hasattr(model, 'loss_history') and model.loss_history:
+            sample_rate = max(1, len(model.loss_history) // 100)
+            iterations = list(range(0, len(model.loss_history), sample_rate))
+            losses = [model.loss_history[i] for i in iterations]
+            plt.plot(iterations, losses, label=f"{param_name}={name}")
     
     plt.xlabel('Iterations')
     plt.ylabel('Loss')
@@ -351,10 +352,22 @@ def run_comparison_experiment(args, param_name, param_values):
     # Plot accuracy curves
     plt.subplot(2, 1, 2)
     for name, model in models.items():
-        if hasattr(model, 'valid_accuracy_history') and len(model.valid_accuracy_history) > 0:
-            record_interval = model.record_interval
-            iterations = [i * record_interval for i in range(len(model.valid_accuracy_history))]
-            plt.plot(iterations, model.valid_accuracy_history, label=f"{param_name}={name}")
+        if hasattr(model, 'valid_accuracy_history') and model.valid_accuracy_history:
+            # Handle multi-class LogisticRegression case
+            if isinstance(model, LogisticRegression) and hasattr(model, 'models') and model.models:
+                # For multi-class LogisticRegression, use the recording interval of the first binary classifier
+                record_interval = model.models[0].record_interval if hasattr(model.models[0], 'record_interval') else 10
+                # If only final accuracy is available, use a single point
+                if len(model.valid_accuracy_history) == 1:
+                    plt.plot([model.num_iterations], model.valid_accuracy_history, 'o', label=f"{param_name}={name}")
+                else:
+                    iterations = [i * record_interval for i in range(len(model.valid_accuracy_history))]
+                    plt.plot(iterations, model.valid_accuracy_history, label=f"{param_name}={name}")
+            else:
+                # For other models, use the standard method
+                record_interval = model.record_interval if hasattr(model, 'record_interval') else 10
+                iterations = [i * record_interval for i in range(len(model.valid_accuracy_history))]
+                plt.plot(iterations, model.valid_accuracy_history, label=f"{param_name}={name}")
     
     plt.xlabel('Iterations')
     plt.ylabel('Validation Accuracy')
