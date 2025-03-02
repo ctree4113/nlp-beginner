@@ -644,15 +644,6 @@ def run_comparison_experiment(args, param_name, param_values):
     print(f"Best Accuracy: {max(accuracy_values):.4f} with {param_name} = {best_accuracy_param}")
     print(f"Best F1 Score: {max(f1_values):.4f} with {param_name} = {best_f1_param}")
     
-    # Save summary to text file
-    summary_path = os.path.join(param_output_dir, 'summary.txt')
-    with open(summary_path, 'w') as f:
-        f.write(f"{param_name.replace('_', ' ').title()} Comparison Summary\n")
-        f.write("="*50 + "\n")
-        f.write(f"Best Accuracy: {max(accuracy_values):.4f} with {param_name} = {best_accuracy_param}\n")
-        f.write(f"Best F1 Score: {max(f1_values):.4f} with {param_name} = {best_f1_param}\n")
-    print(f"Summary saved to {summary_path}")
-    
     return results_df
 
 
