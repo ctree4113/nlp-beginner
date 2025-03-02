@@ -307,7 +307,8 @@ def run_comparison_experiment(args, param_name, param_values):
         # Evaluate on test set
         print("Evaluating on test set...")
         test_pred = model.predict(X_test)
-        test_metrics = Evaluator().evaluate(np.array(test_labels), test_pred)
+        evaluator = Evaluator(model, feature_extractor)
+        test_metrics = evaluator.evaluate(X=X_test, y=np.array(test_labels))
         
         # Store confusion matrix
         cm = confusion_matrix(np.array(test_labels), test_pred)
