@@ -38,14 +38,23 @@ def parse_args():
     parser.add_argument('--regularization', type=str, default='l2', choices=[None, 'l1', 'l2'], 
                         help='Regularization type: None, l1, l2')
     parser.add_argument('--lambda_param', type=float, default=0.001, help='Regularization parameter')
-    parser.add_argument('--optimizer', type=str, default='momentum', 
-                        choices=['gd', 'sgd', 'mini-batch', 'momentum'], 
-                        help='Optimizer: gd(Gradient Descent), sgd(Stochastic Gradient Descent), mini-batch(Mini-batch GD), momentum(Momentum GD)')
+    parser.add_argument('--batch_strategy', type=str, default='mini-batch', 
+                        choices=['full-batch', 'stochastic', 'mini-batch'], 
+                        help='Batch strategy: full-batch, stochastic, mini-batch')
+    parser.add_argument('--optimizer', type=str, default='sgd', 
+                        choices=['sgd', 'momentum'], 
+                        help='Optimizer: sgd(Stochastic Gradient Descent), momentum(Momentum GD)')
     parser.add_argument('--momentum', type=float, default=0.9, help='Momentum coefficient for momentum optimizer')
+    parser.add_argument('--loss_function', type=str, default='cross_entropy', 
+                        choices=['cross_entropy', 'squared_error', 'hinge'], 
+                        help='Loss function: cross_entropy, squared_error, hinge')
+    parser.add_argument('--shuffle', type=bool, default=True, 
+                        help='Whether to shuffle data during training')
     
     # Experiment parameters
     parser.add_argument('--experiment', type=str, default=None, 
-                        choices=[None, 'model_type', 'feature_type', 'ngram', 'learning_rate', 'regularization', 'batch_size', 'optimizer'], 
+                        choices=[None, 'model_type', 'feature_type', 'ngram', 'learning_rate', 
+                                 'regularization', 'batch_size', 'batch_strategy', 'optimizer', 'loss_function', 'shuffle'], 
                         help='Experiment type')
     
     return parser.parse_args()
@@ -77,19 +86,58 @@ def run_experiment(args):
         run_comparison_experiment(args, 'regularization', regularizations)
     elif args.experiment == 'batch_size':
         # Compare different batch sizes
-        batch_sizes = [1, 8, 32, 128, 512, None]  # None means full batch
+        batch_sizes = [32, 64, 128, 256, 512, None]  # None means full batch
         run_comparison_experiment(args, 'batch_size', batch_sizes)
+    elif args.experiment == 'batch_strategy':
+        # Compare different batch strategies
+        batch_strategies = ['full-batch', 'stochastic', 'mini-batch']
+        run_comparison_experiment(args, 'batch_strategy', batch_strategies)
     elif args.experiment == 'optimizer':
         # Compare different optimization methods
-        optimizers = ['gd', 'sgd', 'mini-batch', 'momentum']
+        optimizers = ['sgd', 'momentum']
         run_comparison_experiment(args, 'optimizer', optimizers)
+    elif args.experiment == 'loss_function':
+        # Compare different loss functions
+        loss_functions = ['cross_entropy', 'squared_error', 'hinge']
+        run_comparison_experiment(args, 'loss_function', loss_functions)
+    elif args.experiment == 'shuffle':
+        # Compare shuffle vs no-shuffle
+        shuffle_options = [True, False]
+        run_comparison_experiment(args, 'shuffle', shuffle_options)
+
+def create_model(args):
+    """Create model based on arguments"""
+    if args.model_type == 'logistic':
+        model = LogisticRegression(
+            learning_rate=args.learning_rate,
+            num_iterations=args.num_iterations,
+            batch_size=args.batch_size,
+            regularization=args.regularization,
+            lambda_param=args.lambda_param,
+            batch_strategy=args.batch_strategy,
+            optimizer=args.optimizer,
+            momentum=args.momentum,
+            loss_function=args.loss_function,
+            shuffle=args.shuffle
+        )
+    else:  # softmax
+        model = SoftmaxRegression(
+            learning_rate=args.learning_rate,
+            num_iterations=args.num_iterations,
+            batch_size=args.batch_size,
+            regularization=args.regularization,
+            lambda_param=args.lambda_param,
+            batch_strategy=args.batch_strategy,
+            optimizer=args.optimizer,
+            momentum=args.momentum,
+            loss_function=args.loss_function,
+            shuffle=args.shuffle
+        )
+    
+    return model
 
 def run_single_model(args):
-    """Run single model"""
-    print("=" * 50)
-    print(f"Running single model: {args.model_type}")
-    print("=" * 50)
-    
+    """Run a single model"""
     # Create output directory - ensure directory name is safe
     safe_model_type = str(args.model_type).replace(':', '_')
     safe_feature_type = str(args.feature_type).replace(':', '_')
@@ -108,119 +156,37 @@ def run_single_model(args):
     train_texts, train_labels, valid_texts, valid_labels = data_processor.split_train_valid(
         train_texts, train_labels, args.valid_ratio)
     
-    print(f"Training set size: {len(train_texts)}")
-    print(f"Validation set size: {len(valid_texts)}")
-    print(f"Test set size: {len(test_texts)}")
+    print("Training set size:", len(train_texts))
+    print("Validation set size:", len(valid_texts))
+    print("Test set size:", len(test_texts))
+    print()
     
     # Extract features
-    print("\nExtracting features...")
+    print("Extracting features...")
     feature_extractor = FeatureExtractor(
         feature_type=args.feature_type,
         ngram_range=(args.ngram_min, args.ngram_max),
         max_features=args.max_features
     )
-    
-    # Transform data
     X_train = feature_extractor.fit_transform(train_texts)
     X_valid = feature_extractor.transform(valid_texts)
     X_test = feature_extractor.transform(test_texts)
+    print("Number of features:", X_train.shape[1])
     
-    print(f"Number of features: {X_train.shape[1]}")
-    
-    # Create model
-    if args.model_type == 'logistic':
-        model = LogisticRegression(
-            learning_rate=args.learning_rate,
-            num_iterations=args.num_iterations,
-            batch_size=args.batch_size,
-            regularization=args.regularization,
-            lambda_param=args.lambda_param,
-            optimizer=args.optimizer,
-            momentum=args.momentum,
-            verbose=True
-        )
-    else:
-        model = SoftmaxRegression(
-            learning_rate=args.learning_rate,
-            num_iterations=args.num_iterations,
-            batch_size=args.batch_size,
-            regularization=args.regularization,
-            lambda_param=args.lambda_param,
-            optimizer=args.optimizer,
-            momentum=args.momentum,
-            verbose=True
-        )
-    
-    # Train model with validation and test data for tracking accuracy
-    print(f"\nTraining model with {args.optimizer} optimizer...")
-    start_time = time.time()
+    # Create and train model
+    print("Training model...")
+    model = create_model(args)
     model.fit(X_train, np.array(train_labels), X_valid, np.array(valid_labels), X_test, np.array(test_labels))
-    train_time = time.time() - start_time
-    print(f"Training time: {train_time:.2f} seconds")
     
     # Evaluate model
-    evaluator = Evaluator(output_dir)
-    
-    # Evaluate on validation set
-    print("\nEvaluating on validation set...")
-    valid_pred = model.predict(X_valid)
-    valid_metrics = evaluator.evaluate(np.array(valid_labels), valid_pred)
-    evaluator.print_metrics(valid_metrics)
-    
-    # Evaluate on test set
-    print("\nEvaluating on test set...")
-    test_pred = model.predict(X_test)
-    test_metrics = evaluator.evaluate(np.array(test_labels), test_pred)
-    evaluator.print_metrics(test_metrics)
-    
-    # Plot loss curve
-    evaluator.plot_loss_curve(model.loss_history, title=f"{args.model_type} Model Loss Curve ({args.optimizer})")
-    
-    # Plot accuracy curves if available
-    if hasattr(model, 'train_accuracy_history') and len(model.train_accuracy_history) > 0:
-        # Plot training accuracy curve
-        plt.figure(figsize=(10, 6))
-        record_interval = model.record_interval
-        iterations = [i * record_interval for i in range(len(model.train_accuracy_history))]
-        plt.plot(iterations, model.train_accuracy_history, label='Training Accuracy')
-        
-        # Plot validation accuracy curve if available
-        if hasattr(model, 'valid_accuracy_history') and len(model.valid_accuracy_history) > 0:
-            plt.plot(iterations, model.valid_accuracy_history, label='Validation Accuracy')
-        
-        # Plot test accuracy curve if available
-        if hasattr(model, 'test_accuracy_history') and len(model.test_accuracy_history) > 0:
-            plt.plot(iterations, model.test_accuracy_history, label='Test Accuracy')
-        
-        plt.xlabel('Iterations')
-        plt.ylabel('Accuracy')
-        plt.title(f"{args.model_type} Model Accuracy Curves ({args.optimizer})")
-        plt.legend()
-        plt.grid(True)
-        plt.ylim(0, 1.0)
-        
-        # Save plot
-        plt.savefig(os.path.join(output_dir, 'accuracy_curves.png'))
-    
-    # Plot confusion matrix
-    class_names = [str(i) for i in range(5)]  # Classes 0-4
-    evaluator.plot_confusion_matrix(np.array(test_labels), test_pred, class_names=class_names)
+    print("Evaluating model...")
+    evaluator = Evaluator(model, feature_extractor)
+    evaluator.evaluate(test_texts, test_labels)
     
     # Save results
-    results = {
-        'args': vars(args),
-        'valid_metrics': valid_metrics,
-        'test_metrics': test_metrics,
-        'train_time': train_time,
-        'feature_count': X_train.shape[1]
-    }
+    save_results(args, model, evaluator, output_dir)
     
-    with open(os.path.join(output_dir, 'results.json'), 'w') as f:
-        json.dump(results, f, indent=4)
-    
-    print(f"\nResults saved to {output_dir}")
-    
-    return {**test_metrics, 'train_time': train_time}
+    return model
 
 def run_comparison_experiment(args, param_name, param_values):
     """
@@ -306,8 +272,11 @@ def run_comparison_experiment(args, param_name, param_values):
                 batch_size=new_args.batch_size,
                 regularization=new_args.regularization,
                 lambda_param=new_args.lambda_param,
+                batch_strategy=new_args.batch_strategy,
                 optimizer=new_args.optimizer,
                 momentum=new_args.momentum,
+                loss_function=new_args.loss_function,
+                shuffle=new_args.shuffle,
                 verbose=True
             )
         else:
@@ -317,8 +286,11 @@ def run_comparison_experiment(args, param_name, param_values):
                 batch_size=new_args.batch_size,
                 regularization=new_args.regularization,
                 lambda_param=new_args.lambda_param,
+                batch_strategy=new_args.batch_strategy,
                 optimizer=new_args.optimizer,
                 momentum=new_args.momentum,
+                loss_function=new_args.loss_function,
+                shuffle=new_args.shuffle,
                 verbose=True
             )
         
@@ -461,6 +433,24 @@ def run_comparison_experiment(args, param_name, param_values):
     print("=" * 50)
     
     print(f"\nResults saved to {output_dir}")
+
+def save_results(args, model, evaluator, output_dir):
+    """Save experiment results"""
+    # Get metrics
+    metrics = evaluator.get_metrics()
+    
+    # Save results to JSON
+    results = {
+        'args': vars(args),
+        'metrics': metrics,
+        'feature_count': model.weights.shape[1] if hasattr(model, 'weights') and model.weights is not None else 0
+    }
+    
+    # Save to file
+    with open(os.path.join(output_dir, 'results.json'), 'w') as f:
+        json.dump(results, f, indent=4)
+    
+    print(f"Results saved to {output_dir}")
 
 if __name__ == "__main__":
     args = parse_args()

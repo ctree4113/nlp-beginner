@@ -8,45 +8,76 @@ import os
 class Evaluator:
     """Model evaluator"""
     
-    def __init__(self, output_dir: str = None):
+    def __init__(self, model=None, feature_extractor=None, output_dir: str = None):
         """
         Initialize evaluator
         
         Args:
+            model: Trained model
+            feature_extractor: Feature extractor
             output_dir: Output directory for saving evaluation results
         """
+        self.model = model
+        self.feature_extractor = feature_extractor
         self.output_dir = output_dir
+        self.metrics = {}
+        
         if output_dir and not os.path.exists(output_dir):
             os.makedirs(output_dir)
     
-    def evaluate(self, y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+    def evaluate(self, texts=None, labels=None, X=None, y=None):
         """
         Evaluate model performance
         
         Args:
-            y_true: True labels
-            y_pred: Predicted labels
+            texts: Text data (if feature_extractor is provided)
+            labels: True labels
+            X: Feature matrix (if texts is not provided)
+            y: True labels (if labels is not provided)
             
         Returns:
             Dictionary of evaluation metrics
         """
+        # If texts and feature_extractor are provided, extract features
+        if texts is not None and self.feature_extractor is not None:
+            X = self.feature_extractor.transform(texts)
+            y = np.array(labels)
+        elif X is not None and y is not None:
+            y = np.array(y)
+        else:
+            raise ValueError("Either (texts, labels) or (X, y) must be provided")
+        
+        # Get predictions
+        y_pred = self.model.predict(X)
+        
         # Calculate evaluation metrics
-        accuracy = accuracy_score(y_true, y_pred)
+        accuracy = accuracy_score(y, y_pred)
         
         # For multi-class problems, use macro average
-        precision = precision_score(y_true, y_pred, average='macro', zero_division=0)
-        recall = recall_score(y_true, y_pred, average='macro', zero_division=0)
-        f1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
+        precision = precision_score(y, y_pred, average='macro', zero_division=0)
+        recall = recall_score(y, y_pred, average='macro', zero_division=0)
+        f1 = f1_score(y, y_pred, average='macro', zero_division=0)
         
-        # Return evaluation metrics
-        metrics = {
+        # Store evaluation metrics
+        self.metrics = {
             'accuracy': accuracy,
             'precision': precision,
             'recall': recall,
             'f1': f1
         }
         
-        return metrics
+        # Print metrics
+        self.print_metrics(self.metrics)
+        
+        # Plot confusion matrix
+        class_names = [str(i) for i in range(len(np.unique(y)))]
+        self.plot_confusion_matrix(y, y_pred, class_names=class_names)
+        
+        return self.metrics
+    
+    def get_metrics(self):
+        """Get evaluation metrics"""
+        return self.metrics
     
     def print_metrics(self, metrics: Dict[str, float]) -> None:
         """

@@ -4,7 +4,7 @@
 OPTION=${1:-"help"}
 
 # Base command with optimized parameters
-BASE_CMD="python main.py --num_iterations 2000 --feature_type tfidf --ngram_max 2 --optimizer momentum"
+BASE_CMD="python main.py --num_iterations 2000 --feature_type tfidf --ngram_max 2 --batch_strategy mini-batch --optimizer momentum"
 
 # Output directory
 OUTPUT_DIR="../output"
@@ -38,7 +38,10 @@ case $OPTION in
         echo "  learning_rate     - Compare different learning rates"
         echo "  regularization    - Compare different regularization methods"
         echo "  batch_size        - Compare different batch sizes"
-        echo "  optimizer         - Compare different optimization methods"
+        echo "  batch_strategy    - Compare different batch strategies (full-batch, stochastic, mini-batch)"
+        echo "  optimizer         - Compare different optimization methods (sgd, momentum)"
+        echo "  loss_function     - Compare different loss functions"
+        echo "  shuffle           - Compare shuffle vs no-shuffle"
         echo "  all               - Run all comparison experiments"
         echo "  clean             - Clean output directory"
         ;;
@@ -78,9 +81,24 @@ case $OPTION in
         run_with_header "COMPARING BATCH SIZES" "$BASE_CMD --experiment batch_size"
         ;;
     
+    # Compare different batch strategies
+    "batch_strategy")
+        run_with_header "COMPARING BATCH STRATEGIES" "$BASE_CMD --experiment batch_strategy"
+        ;;
+    
     # Compare different optimization methods
     "optimizer")
         run_with_header "COMPARING OPTIMIZATION METHODS" "$BASE_CMD --experiment optimizer"
+        ;;
+    
+    # Compare different loss functions
+    "loss_function")
+        run_with_header "COMPARING LOSS FUNCTIONS" "$BASE_CMD --experiment loss_function"
+        ;;
+    
+    # Compare shuffle vs no-shuffle
+    "shuffle")
+        run_with_header "COMPARING SHUFFLE VS NO-SHUFFLE" "$BASE_CMD --experiment shuffle"
         ;;
     
     # Run all comparison experiments
@@ -94,7 +112,10 @@ case $OPTION in
         ./run.sh learning_rate
         ./run.sh regularization
         ./run.sh batch_size
+        ./run.sh batch_strategy
         ./run.sh optimizer
+        ./run.sh loss_function
+        ./run.sh shuffle
         
         print_header "ALL EXPERIMENTS COMPLETED"
         ;;

@@ -7,7 +7,8 @@ class BaseModel:
     
     def __init__(self, learning_rate: float = 0.01, num_iterations: int = 1000, 
                  batch_size: int = 32, random_state: int = 42, verbose: bool = True,
-                 optimizer: str = 'mini-batch', momentum: float = 0.9):
+                 batch_strategy: str = 'mini-batch', optimizer: str = 'sgd', momentum: float = 0.9,
+                 loss_function: str = 'cross_entropy', shuffle: bool = True):
         """
         Initialize base model
         
@@ -17,18 +18,23 @@ class BaseModel:
             batch_size: Batch size, if None use full batch
             random_state: Random seed
             verbose: Whether to print training progress
-            optimizer: Optimization method, options are 'gd' (Gradient Descent), 
-                      'sgd' (Stochastic Gradient Descent), 'mini-batch' (Mini-batch Gradient Descent),
+            batch_strategy: Batch processing strategy, options are 'full-batch', 'stochastic', 'mini-batch'
+            optimizer: Optimization method, options are 'sgd' (Stochastic Gradient Descent), 
                       'momentum' (Momentum Gradient Descent)
             momentum: Momentum coefficient for momentum optimizer
+            loss_function: Loss function to use, options are 'cross_entropy', 'squared_error', 'hinge'
+            shuffle: Whether to shuffle data during training
         """
         self.learning_rate = learning_rate
         self.num_iterations = num_iterations
         self.batch_size = batch_size
         self.random_state = random_state
         self.verbose = verbose
+        self.batch_strategy = batch_strategy.lower()
         self.optimizer = optimizer.lower()
         self.momentum = momentum
+        self.loss_function = loss_function.lower()
+        self.shuffle = shuffle
         self.weights = None
         self.bias = None
         self.loss_history = []
@@ -89,7 +95,7 @@ class BaseModel:
     
     def _get_mini_batches(self, X: np.ndarray, y: np.ndarray) -> List[Tuple[np.ndarray, np.ndarray]]:
         """
-        Generate mini-batches
+        Generate mini-batches based on batch strategy
         
         Args:
             X: Feature matrix
@@ -100,60 +106,83 @@ class BaseModel:
         """
         n_samples = X.shape[0]
         
-        if self.batch_size is None or self.batch_size >= n_samples:
+        # Handle different batch strategies
+        if self.batch_strategy == 'full-batch' or (self.batch_size is None or self.batch_size >= n_samples):
             # Full batch
             return [(X, y)]
-        
-        # Shuffle data
-        indices = np.random.permutation(n_samples)
-        X_shuffled = X[indices]
-        y_shuffled = y[indices]
-        
-        # Generate mini-batches
-        mini_batches = []
-        num_complete_batches = n_samples // self.batch_size
-        
-        for i in range(num_complete_batches):
-            start_idx = i * self.batch_size
-            end_idx = (i + 1) * self.batch_size
-            mini_batches.append((X_shuffled[start_idx:end_idx], y_shuffled[start_idx:end_idx]))
-        
-        # Handle remaining samples
-        if n_samples % self.batch_size != 0:
-            start_idx = num_complete_batches * self.batch_size
-            mini_batches.append((X_shuffled[start_idx:], y_shuffled[start_idx:]))
-        
-        return mini_batches
+        elif self.batch_strategy == 'stochastic':
+            # Stochastic (one sample at a time)
+            if self.shuffle:
+                indices = np.random.permutation(n_samples)
+                X_shuffled = X[indices]
+                y_shuffled = y[indices]
+            else:
+                X_shuffled = X
+                y_shuffled = y
+                
+            # Return individual samples
+            return [(X_shuffled[i:i+1], y_shuffled[i:i+1]) for i in range(n_samples)]
+        else:  # mini-batch
+            # Handle shuffling
+            if self.shuffle:
+                # Shuffle data
+                indices = np.random.permutation(n_samples)
+                X_shuffled = X[indices]
+                y_shuffled = y[indices]
+            else:
+                # No shuffle
+                X_shuffled = X
+                y_shuffled = y
+            
+            # Generate mini-batches
+            mini_batches = []
+            num_complete_batches = n_samples // self.batch_size
+            
+            for i in range(num_complete_batches):
+                start_idx = i * self.batch_size
+                end_idx = (i + 1) * self.batch_size
+                mini_batches.append((X_shuffled[start_idx:end_idx], y_shuffled[start_idx:end_idx]))
+            
+            # Handle remaining samples
+            if n_samples % self.batch_size != 0:
+                start_idx = num_complete_batches * self.batch_size
+                mini_batches.append((X_shuffled[start_idx:], y_shuffled[start_idx:]))
+            
+            return mini_batches
 
 
 class LogisticRegression(BaseModel):
-    """Logistic regression model with One-vs-Rest strategy for multi-class classification"""
+    """Logistic Regression model for multi-class classification using One-vs-Rest strategy"""
     
     def __init__(self, learning_rate: float = 0.01, num_iterations: int = 1000, 
                  batch_size: int = 32, random_state: int = 42, verbose: bool = True,
                  regularization: Optional[str] = None, lambda_param: float = 0.01,
-                 optimizer: str = 'mini-batch', momentum: float = 0.9):
+                 batch_strategy: str = 'mini-batch', optimizer: str = 'sgd', momentum: float = 0.9,
+                 loss_function: str = 'cross_entropy', shuffle: bool = True):
         """
         Initialize logistic regression model
         
         Args:
             learning_rate: Learning rate
             num_iterations: Number of iterations
-            batch_size: Batch size
+            batch_size: Batch size, if None use full batch
             random_state: Random seed
             verbose: Whether to print training progress
-            regularization: Regularization type, options are 'l1', 'l2' or None
+            regularization: Regularization method, options are None, 'l1', 'l2'
             lambda_param: Regularization parameter
-            optimizer: Optimization method, options are 'gd', 'sgd', 'mini-batch', 'momentum'
+            batch_strategy: Batch processing strategy, options are 'full-batch', 'stochastic', 'mini-batch'
+            optimizer: Optimization method, options are 'sgd', 'momentum'
             momentum: Momentum coefficient for momentum optimizer
+            loss_function: Loss function to use, options are 'cross_entropy', 'squared_error', 'hinge'
+            shuffle: Whether to shuffle data during training
         """
-        super().__init__(learning_rate, num_iterations, batch_size, random_state, verbose, optimizer, momentum)
+        super().__init__(learning_rate, num_iterations, batch_size, random_state, verbose,
+                      batch_strategy, optimizer, momentum, loss_function, shuffle)
         self.regularization = regularization
         self.lambda_param = lambda_param
-        # Add properties for multi-class support
         self.classes = None
         self.n_classes = None
-        self.models = None  # Will store a binary model for each class
+        self.models = []  # For One-vs-Rest strategy
     
     def fit(self, X: np.ndarray, y: np.ndarray, X_valid: np.ndarray = None, y_valid: np.ndarray = None, 
             X_test: np.ndarray = None, y_test: np.ndarray = None) -> 'LogisticRegression':
@@ -212,8 +241,11 @@ class LogisticRegression(BaseModel):
                 verbose=self.verbose,  # 传递 verbose 参数
                 regularization=self.regularization,
                 lambda_param=self.lambda_param,
+                batch_strategy=self.batch_strategy,
                 optimizer=self.optimizer,
-                momentum=self.momentum
+                momentum=self.momentum,
+                loss_function=self.loss_function,
+                shuffle=self.shuffle
             )
             
             # Track validation and test data for the binary model
@@ -283,90 +315,27 @@ class LogisticRegression(BaseModel):
     
     def _fit_binary(self, X: np.ndarray, y: np.ndarray, X_valid: np.ndarray = None, y_valid: np.ndarray = None,
                    X_test: np.ndarray = None, y_test: np.ndarray = None) -> 'LogisticRegression':
-        """Private method to fit a binary logistic regression model"""
-        n_samples, n_features = X.shape
+        """Train a binary logistic regression classifier for a specific class"""
+        # Create a binary classifier for this class
+        binary_model = _BinaryLogisticRegression(
+            learning_rate=self.learning_rate,
+            num_iterations=self.num_iterations // self.n_classes,  # Reduce iterations per class
+            batch_size=self.batch_size,
+            random_state=self.random_state,
+            verbose=self.verbose,
+            regularization=self.regularization,
+            lambda_param=self.lambda_param,
+            batch_strategy=self.batch_strategy,
+            optimizer=self.optimizer,
+            momentum=self.momentum,
+            loss_function=self.loss_function,
+            shuffle=self.shuffle
+        )
         
-        # Initialize parameters
-        self._initialize_parameters(n_features, 2)
+        # Train the binary classifier
+        binary_model.fit(X, y, X_valid, y_valid, X_test, y_test)
         
-        # Initialize velocity for momentum optimizer
-        velocity_w = np.zeros_like(self.weights)
-        velocity_b = 0
-        
-        # Record start time
-        start_time = time.time()
-        
-        # Gradient descent
-        for i in range(self.num_iterations):
-            # Get batches based on optimizer type
-            if self.optimizer == 'gd':
-                # Gradient Descent: use full batch
-                batches = [(X, y)]
-            elif self.optimizer == 'sgd':
-                # Stochastic Gradient Descent: use single random sample
-                idx = np.random.randint(n_samples)
-                batches = [(X[idx:idx+1], y[idx:idx+1])]
-            else:
-                # Mini-batch or Momentum: use mini-batches
-                batches = self._get_mini_batches(X, y)
-            
-            # Perform gradient descent on each batch
-            for X_batch, y_batch in batches:
-                # Calculate predictions
-                z = np.dot(X_batch, self.weights) + self.bias
-                y_pred = self._sigmoid(z)
-                
-                # Calculate gradients
-                dw = (1 / len(X_batch)) * np.dot(X_batch.T, (y_pred - y_batch))
-                db = (1 / len(X_batch)) * np.sum(y_pred - y_batch)
-                
-                # Add regularization term
-                if self.regularization == 'l1':
-                    dw += (self.lambda_param / len(X_batch)) * np.sign(self.weights)
-                elif self.regularization == 'l2':
-                    dw += (self.lambda_param / len(X_batch)) * self.weights
-                
-                # Update parameters based on optimizer
-                if self.optimizer == 'momentum':
-                    # Momentum update
-                    velocity_w = self.momentum * velocity_w - self.learning_rate * dw
-                    velocity_b = self.momentum * velocity_b - self.learning_rate * db
-                    self.weights += velocity_w
-                    self.bias += velocity_b
-                else:
-                    # Standard update (GD, SGD, Mini-batch)
-                    self.weights -= self.learning_rate * dw
-                    self.bias -= self.learning_rate * db
-            
-            # Calculate loss
-            loss = self._compute_loss(X, y)
-            self.loss_history.append(loss)
-            
-            # Record accuracy metrics at specified intervals
-            if i % self.record_interval == 0:
-                # Training accuracy
-                train_pred = self.predict(X)
-                train_acc = np.mean(train_pred == y)
-                self.train_accuracy_history.append(train_acc)
-                
-                # Validation accuracy
-                if X_valid is not None and y_valid is not None:
-                    valid_pred = self.predict(X_valid)
-                    valid_acc = np.mean(valid_pred == y_valid)
-                    self.valid_accuracy_history.append(valid_acc)
-                
-                # Test accuracy
-                if X_test is not None and y_test is not None:
-                    test_pred = self.predict(X_test)
-                    test_acc = np.mean(test_pred == y_test)
-                    self.test_accuracy_history.append(test_acc)
-            
-            # Print training progress
-            if self.verbose and (i + 1) % 100 == 0:
-                elapsed_time = time.time() - start_time
-                print(f"Iteration {i+1}/{self.num_iterations}, Loss: {abs(loss):.4f}, Time: {elapsed_time:.2f}s")
-        
-        return self
+        return binary_model
     
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         """
@@ -437,7 +406,7 @@ class LogisticRegression(BaseModel):
     
     def _compute_loss(self, X: np.ndarray, y: np.ndarray) -> float:
         """
-        Compute binary cross-entropy loss
+        Compute loss for binary classification
         
         Args:
             X: Feature matrix
@@ -449,8 +418,23 @@ class LogisticRegression(BaseModel):
         m = X.shape[0]
         y_pred = self._sigmoid(np.dot(X, self.weights) + self.bias)
         
-        # Calculate cross-entropy loss
-        loss = -(1 / m) * np.sum(y * np.log(y_pred + 1e-15) + (1 - y) * np.log(1 - y_pred + 1e-15))
+        # Calculate loss based on selected loss function
+        if self.loss_function == 'cross_entropy':
+            # Binary cross-entropy loss
+            loss = -(1 / m) * np.sum(y * np.log(y_pred + 1e-15) + (1 - y) * np.log(1 - y_pred + 1e-15))
+        elif self.loss_function == 'squared_error':
+            # Mean squared error loss
+            loss = (1 / (2 * m)) * np.sum(np.square(y_pred - y))
+        elif self.loss_function == 'hinge':
+            # Hinge loss (for binary classification)
+            # Convert predictions from [0,1] to [-1,1]
+            y_pred_scaled = 2 * y_pred - 1
+            # Convert labels from [0,1] to [-1,1]
+            y_scaled = 2 * y - 1
+            loss = (1 / m) * np.sum(np.maximum(0, 1 - y_scaled * y_pred_scaled))
+        else:
+            # Default to cross-entropy
+            loss = -(1 / m) * np.sum(y * np.log(y_pred + 1e-15) + (1 - y) * np.log(1 - y_pred + 1e-15))
         
         # Add regularization term
         if self.regularization == 'l1':
@@ -463,129 +447,187 @@ class LogisticRegression(BaseModel):
 
 # Helper class for One-vs-Rest implementation
 class _BinaryLogisticRegression(LogisticRegression):
-    """Internal class for binary classification in One-vs-Rest strategy"""
+    """Helper class for binary logistic regression used in the One-vs-Rest strategy"""
+    
+    def __init__(self, learning_rate: float = 0.01, num_iterations: int = 1000, 
+                 batch_size: int = 32, random_state: int = 42, verbose: bool = True,
+                 regularization: Optional[str] = None, lambda_param: float = 0.01,
+                 batch_strategy: str = 'mini-batch', optimizer: str = 'sgd', momentum: float = 0.9,
+                 loss_function: str = 'cross_entropy', shuffle: bool = True):
+        """Initialize binary logistic regression model"""
+        super().__init__(learning_rate, num_iterations, batch_size, random_state, verbose,
+                      regularization, lambda_param, batch_strategy, optimizer, momentum, loss_function, shuffle)
+    
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        """
+        Predict probability for positive class
+        
+        Args:
+            X: Feature matrix with shape (n_samples, n_features)
+            
+        Returns:
+            Predicted probabilities for positive class with shape (n_samples,)
+        """
+        # Get probability of positive class (class 1)
+        pos_proba = self._sigmoid(np.dot(X, self.weights) + self.bias)
+        return pos_proba
+    
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        """
+        Predict class labels
+        
+        Args:
+            X: Feature matrix with shape (n_samples, n_features)
+            
+        Returns:
+            Predicted class labels with shape (n_samples,)
+        """
+        # For binary classification, use threshold 0.5
+        return (self.predict_proba(X) >= 0.5).astype(int)
     
     def fit(self, X, y, X_valid=None, y_valid=None, X_test=None, y_test=None):
-        """Fit the binary model"""
-        # Ensure this is treated as binary classification
-        self.classes = np.array([0, 1])
-        self.n_classes = 2
-        n_samples, n_features = X.shape
-        
+        """Train binary logistic regression model"""
         # Initialize parameters
-        self._initialize_parameters(n_features, 2)
+        m, n = X.shape
+        self._initialize_parameters(n, 2)
         
         # Initialize velocity for momentum optimizer
-        velocity_w = np.zeros_like(self.weights)
-        velocity_b = 0
+        vdw = np.zeros_like(self.weights)
+        vdb = 0
         
-        # Record start time
-        start_time = time.time()
+        # Store the best weights (with lowest validation loss)
+        best_weights = None
+        best_bias = None
+        best_val_loss = float('inf')
         
-        # Gradient descent
+        # For recording metrics
         self.loss_history = []
         self.train_accuracy_history = []
         self.valid_accuracy_history = []
         self.test_accuracy_history = []
         
-        # 计算正例样本比例，用于输出信息
-        positive_ratio = np.mean(y == 1)
-        
-        # 每个分类器仅输出少量的进度信息，避免过多输出
-        output_interval = max(10, self.num_iterations // 10)
-        
+        # Gradient descent loop
         for i in range(self.num_iterations):
-            # Get batches based on optimizer type
-            if self.optimizer == 'gd':
-                # Gradient Descent: use full batch
-                batches = [(X, y)]
-            elif self.optimizer == 'sgd':
-                # Stochastic Gradient Descent: use single random sample
-                idx = np.random.randint(n_samples)
-                batches = [(X[idx:idx+1], y[idx:idx+1])]
-            else:
-                # Mini-batch or Momentum: use mini-batches
-                batches = self._get_mini_batches(X, y)
-            
-            # Perform gradient descent on each batch
-            for X_batch, y_batch in batches:
-                # Calculate predictions
-                z = np.dot(X_batch, self.weights) + self.bias
-                y_pred = self._sigmoid(z)
+            if self.batch_strategy == 'full-batch':
+                # Full batch gradient descent
+                A = self._sigmoid(np.dot(X, self.weights) + self.bias)
+                dw = (1 / m) * np.dot(X.T, (A - y))
+                db = (1 / m) * np.sum(A - y)
                 
-                # Calculate gradients
-                dw = (1 / len(X_batch)) * np.dot(X_batch.T, (y_pred - y_batch))
-                db = (1 / len(X_batch)) * np.sum(y_pred - y_batch)
-                
-                # Add regularization term
+                # Add regularization
                 if self.regularization == 'l1':
-                    dw += (self.lambda_param / len(X_batch)) * np.sign(self.weights)
+                    dw += (self.lambda_param / m) * np.sign(self.weights)
                 elif self.regularization == 'l2':
-                    dw += (self.lambda_param / len(X_batch)) * self.weights
+                    dw += (self.lambda_param / m) * self.weights
                 
-                # Update parameters based on optimizer
+                # Update parameters
                 if self.optimizer == 'momentum':
-                    # Momentum update
-                    velocity_w = self.momentum * velocity_w - self.learning_rate * dw
-                    velocity_b = self.momentum * velocity_b - self.learning_rate * db
-                    self.weights += velocity_w
-                    self.bias += velocity_b
-                else:
-                    # Standard update (GD, SGD, Mini-batch)
+                    vdw = self.momentum * vdw + self.learning_rate * dw
+                    vdb = self.momentum * vdb + self.learning_rate * db
+                    self.weights -= vdw
+                    self.bias -= vdb
+                else:  # sgd
                     self.weights -= self.learning_rate * dw
                     self.bias -= self.learning_rate * db
+            else:
+                # Mini-batch or stochastic gradient descent
+                mini_batches = self._get_mini_batches(X, y)
+                
+                for mini_batch in mini_batches:
+                    X_mini, y_mini = mini_batch
+                    m_mini = X_mini.shape[0]
+                    
+                    # Forward and backward propagation
+                    A = self._sigmoid(np.dot(X_mini, self.weights) + self.bias)
+                    dw = (1 / m_mini) * np.dot(X_mini.T, (A - y_mini))
+                    db = (1 / m_mini) * np.sum(A - y_mini)
+                    
+                    # Add regularization
+                    if self.regularization == 'l1':
+                        dw += (self.lambda_param / m_mini) * np.sign(self.weights)
+                    elif self.regularization == 'l2':
+                        dw += (self.lambda_param / m_mini) * self.weights
+                    
+                    # Update parameters
+                    if self.optimizer == 'momentum':
+                        vdw = self.momentum * vdw + self.learning_rate * dw
+                        vdb = self.momentum * vdb + self.learning_rate * db
+                        self.weights -= vdw
+                        self.bias -= vdb
+                    else:  # sgd
+                        self.weights -= self.learning_rate * dw
+                        self.bias -= self.learning_rate * db
             
-            # Calculate loss
-            loss = self._compute_loss(X, y)
-            self.loss_history.append(loss)
-            
-            # Record accuracy metrics at wider intervals
-            if i % (self.record_interval * 5) == 0:
-                # Training accuracy
-                train_pred = self.predict(X)
-                train_acc = np.mean(train_pred == y)
-                self.train_accuracy_history.append(train_acc)
+            # Compute loss and accuracy every few iterations
+            if i % self.record_interval == 0 or i == self.num_iterations - 1:
+                # Compute training loss
+                train_loss = self._compute_loss(X, y)
+                self.loss_history.append(train_loss)
+                
+                # Compute accuracy
+                y_pred_train = self.predict(X)
+                train_accuracy = np.mean(y_pred_train == y)
+                self.train_accuracy_history.append(train_accuracy)
                 
                 # Validation accuracy
                 if X_valid is not None and y_valid is not None:
-                    valid_pred = self.predict(X_valid)
-                    valid_acc = np.mean(valid_pred == y_valid)
-                    self.valid_accuracy_history.append(valid_acc)
-            
-            # Print training progress sparingly
-            if self.verbose and (i + 1) % output_interval == 0:
-                elapsed_time = time.time() - start_time
-                print(f"  Iteration {i+1}/{self.num_iterations}, Loss: {abs(loss):.4f}, Time: {elapsed_time:.2f}s (Positive examples: {positive_ratio*100:.1f}%)")
+                    y_pred_valid = self.predict(X_valid)
+                    valid_accuracy = np.mean(y_pred_valid == y_valid)
+                    self.valid_accuracy_history.append(valid_accuracy)
+                    
+                    # Save best model based on validation loss
+                    val_loss = self._compute_loss(X_valid, y_valid)
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        best_weights = self.weights.copy()
+                        best_bias = self.bias
+                
+                # Test accuracy
+                if X_test is not None and y_test is not None:
+                    y_pred_test = self.predict(X_test)
+                    test_accuracy = np.mean(y_pred_test == y_test)
+                    self.test_accuracy_history.append(test_accuracy)
+                
+                if self.verbose and i % (self.record_interval * 10) == 0:
+                    print(f"Iteration {i}: Train Loss = {train_loss:.6f}, Train Accuracy = {train_accuracy:.6f}")
+                    if X_valid is not None and y_valid is not None:
+                        print(f"Validation Accuracy = {valid_accuracy:.6f}")
+        
+        # Use the best model if validation was provided
+        if best_weights is not None and best_bias is not None:
+            self.weights = best_weights
+            self.bias = best_bias
         
         return self
-    
-    def predict_proba(self, X):
-        """Return probability of positive class only"""
-        return self._sigmoid(np.dot(X, self.weights) + self.bias)
 
 
 class SoftmaxRegression(BaseModel):
-    """Multi-class Softmax regression model"""
+    """Softmax Regression model for multi-class classification"""
     
     def __init__(self, learning_rate: float = 0.01, num_iterations: int = 1000, 
                  batch_size: int = 32, random_state: int = 42, verbose: bool = True,
                  regularization: Optional[str] = None, lambda_param: float = 0.01,
-                 optimizer: str = 'mini-batch', momentum: float = 0.9):
+                 batch_strategy: str = 'mini-batch', optimizer: str = 'sgd', momentum: float = 0.9,
+                 loss_function: str = 'cross_entropy', shuffle: bool = True):
         """
-        Initialize Softmax regression model
+        Initialize softmax regression model
         
         Args:
             learning_rate: Learning rate
             num_iterations: Number of iterations
-            batch_size: Batch size
+            batch_size: Batch size, if None use full batch
             random_state: Random seed
             verbose: Whether to print training progress
-            regularization: Regularization type, options are 'l1', 'l2' or None
+            regularization: Regularization method, options are None, 'l1', 'l2'
             lambda_param: Regularization parameter
-            optimizer: Optimization method, options are 'gd', 'sgd', 'mini-batch', 'momentum'
+            batch_strategy: Batch processing strategy, options are 'full-batch', 'stochastic', 'mini-batch'
+            optimizer: Optimization method, options are 'sgd', 'momentum'
             momentum: Momentum coefficient for momentum optimizer
+            loss_function: Loss function to use, options are 'cross_entropy', 'squared_error'
+            shuffle: Whether to shuffle data during training
         """
-        super().__init__(learning_rate, num_iterations, batch_size, random_state, verbose, optimizer, momentum)
+        super().__init__(learning_rate, num_iterations, batch_size, random_state, verbose,
+                      batch_strategy, optimizer, momentum, loss_function, shuffle)
         self.regularization = regularization
         self.lambda_param = lambda_param
         self.classes = None
@@ -594,7 +636,7 @@ class SoftmaxRegression(BaseModel):
     def fit(self, X: np.ndarray, y: np.ndarray, X_valid: np.ndarray = None, y_valid: np.ndarray = None, 
             X_test: np.ndarray = None, y_test: np.ndarray = None) -> 'SoftmaxRegression':
         """
-        Train Softmax regression model
+        Train softmax regression model
         
         Args:
             X: Feature matrix with shape (n_samples, n_features)
@@ -605,67 +647,101 @@ class SoftmaxRegression(BaseModel):
             y_test: Test label vector
             
         Returns:
-            self
+            Trained model
         """
-        n_samples, n_features = X.shape
-        
-        # Get class information
+        # Get unique classes and number of classes
         self.classes = np.unique(y)
         self.n_classes = len(self.classes)
         
-        # Convert labels to one-hot encoding
+        # Initialize parameters
+        m, n = X.shape
+        self._initialize_parameters(n, self.n_classes)
+        
+        # One-hot encode labels
         y_one_hot = self._one_hot_encode(y)
         
-        # Initialize parameters
-        self._initialize_parameters(n_features, self.n_classes)
+        # One-hot encode validation and test labels if provided
+        y_valid_one_hot = None if y_valid is None else self._one_hot_encode(y_valid)
+        y_test_one_hot = None if y_test is None else self._one_hot_encode(y_test)
         
         # Initialize velocity for momentum optimizer
-        velocity_w = np.zeros_like(self.weights)
-        velocity_b = np.zeros_like(self.bias)
+        vdw = np.zeros_like(self.weights)
+        vdb = np.zeros_like(self.bias)
         
-        # Record start time
+        # Store the best weights (with lowest validation loss)
+        best_weights = None
+        best_bias = None
+        best_val_loss = float('inf')
+        
+        # For recording metrics
+        self.loss_history = []
+        self.train_accuracy_history = []
+        self.valid_accuracy_history = []
+        self.test_accuracy_history = []
+        
+        # Start timer
         start_time = time.time()
         
-        # Gradient descent
+        # Gradient descent loop
         for i in range(self.num_iterations):
-            # Get batches based on optimizer type
-            if self.optimizer == 'gd':
-                # Gradient Descent: use full batch
-                batches = [(X, y_one_hot)]
-            elif self.optimizer == 'sgd':
-                # Stochastic Gradient Descent: use single random sample
-                idx = np.random.randint(n_samples)
-                batches = [(X[idx:idx+1], y_one_hot[idx:idx+1])]
-            else:
-                # Mini-batch or Momentum: use mini-batches
-                batches = self._get_mini_batches(X, y_one_hot)
-            
-            # Perform gradient descent on each batch
-            for X_batch, y_batch in batches:
-                # Calculate predictions
-                y_pred = self._softmax(np.dot(X_batch, self.weights.T) + self.bias)
+            if self.batch_strategy == 'full-batch':
+                # Full batch gradient descent
+                # Forward propagation
+                Z = np.dot(X, self.weights.T) + self.bias
+                A = self._softmax(Z)
                 
-                # Calculate gradients
-                dw = (1 / len(X_batch)) * np.dot((y_pred - y_batch).T, X_batch)
-                db = (1 / len(X_batch)) * np.sum(y_pred - y_batch, axis=0)
+                # Compute gradients
+                dZ = A - y_one_hot
+                dw = (1 / m) * np.dot(dZ.T, X)
+                db = (1 / m) * np.sum(dZ, axis=0)
                 
-                # Add regularization term
+                # Add regularization
                 if self.regularization == 'l1':
-                    dw += (self.lambda_param / len(X_batch)) * np.sign(self.weights)
+                    dw += (self.lambda_param / m) * np.sign(self.weights)
                 elif self.regularization == 'l2':
-                    dw += (self.lambda_param / len(X_batch)) * self.weights
+                    dw += (self.lambda_param / m) * self.weights
                 
-                # Update parameters based on optimizer
+                # Update parameters
                 if self.optimizer == 'momentum':
-                    # Momentum update
-                    velocity_w = self.momentum * velocity_w - self.learning_rate * dw
-                    velocity_b = self.momentum * velocity_b - self.learning_rate * db
-                    self.weights += velocity_w
-                    self.bias += velocity_b
-                else:
-                    # Standard update (GD, SGD, Mini-batch)
+                    vdw = self.momentum * vdw + self.learning_rate * dw
+                    vdb = self.momentum * vdb + self.learning_rate * db
+                    self.weights -= vdw
+                    self.bias -= vdb
+                else:  # sgd
                     self.weights -= self.learning_rate * dw
                     self.bias -= self.learning_rate * db
+            else:
+                # Mini-batch or stochastic gradient descent
+                mini_batches = self._get_mini_batches(X, y_one_hot)
+                
+                for mini_batch in mini_batches:
+                    X_mini, y_mini = mini_batch
+                    m_mini = X_mini.shape[0]
+                    
+                    # Forward propagation
+                    Z = np.dot(X_mini, self.weights.T) + self.bias
+                    A = self._softmax(Z)
+                    
+                    # Compute gradients
+                    dZ = A - y_mini
+                    dw = (1 / m_mini) * np.dot(dZ.T, X_mini)
+                    db = (1 / m_mini) * np.sum(dZ, axis=0)
+                    
+                    # Add regularization
+                    if self.regularization == 'l1':
+                        dw += (self.lambda_param / m_mini) * np.sign(self.weights)
+                    elif self.regularization == 'l2':
+                        dw += (self.lambda_param / m_mini) * self.weights
+                    
+                    # Update parameters
+                    if self.optimizer == 'momentum':
+                        vdw = self.momentum * vdw + self.learning_rate * dw
+                        vdb = self.momentum * vdb + self.learning_rate * db
+                        self.weights -= vdw
+                        self.bias -= vdb
+                    else:  # sgd
+                        self.weights -= self.learning_rate * dw
+                        self.bias -= self.learning_rate * db
             
             # Calculate loss
             loss = self._compute_loss(X, y_one_hot)
@@ -759,7 +835,7 @@ class SoftmaxRegression(BaseModel):
     
     def _compute_loss(self, X: np.ndarray, y_one_hot: np.ndarray) -> float:
         """
-        Compute cross-entropy loss
+        Compute loss for multi-class classification
         
         Args:
             X: Feature matrix
@@ -771,8 +847,30 @@ class SoftmaxRegression(BaseModel):
         m = X.shape[0]
         y_pred = self.predict_proba(X)
         
-        # Calculate cross-entropy loss
-        loss = -(1 / m) * np.sum(y_one_hot * np.log(y_pred + 1e-15))
+        # Calculate loss based on selected loss function
+        if self.loss_function == 'cross_entropy':
+            # Cross-entropy loss
+            loss = -(1 / m) * np.sum(y_one_hot * np.log(y_pred + 1e-15))
+        elif self.loss_function == 'squared_error':
+            # Mean squared error loss
+            loss = (1 / (2 * m)) * np.sum(np.square(y_pred - y_one_hot))
+        elif self.loss_function == 'hinge':
+            # Multi-class hinge loss (one-vs-all approach)
+            # For each sample, calculate max(0, 1 - (correct_class_score - other_class_score))
+            y_true_idx = np.argmax(y_one_hot, axis=1)
+            margins = np.zeros(m)
+            
+            for i in range(m):
+                correct_class_score = y_pred[i, y_true_idx[i]]
+                # Sum of hinge losses for all incorrect classes
+                margin = np.sum(np.maximum(0, 1 - (correct_class_score - y_pred[i])))
+                # Subtract 1 because we counted the correct class too
+                margins[i] = margin - np.maximum(0, 1 - (correct_class_score - correct_class_score))
+            
+            loss = (1 / m) * np.sum(margins)
+        else:
+            # Default to cross-entropy
+            loss = -(1 / m) * np.sum(y_one_hot * np.log(y_pred + 1e-15))
         
         # Add regularization term
         if self.regularization == 'l1':
