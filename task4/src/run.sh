@@ -158,12 +158,12 @@ python main.py \
     --char_channel_size 50 \
     --lr 0.001 \
     --batch_size 32 \
-    --epochs 50 \
+    --epochs 100 \
     --use_lr_scheduler \
     --scheduler_patience 3 \
     --scheduler_factor 0.5 \
     --grad_clip 5.0 \
     --weight_decay 1e-4 \
-    --early_stopping 20 \
+    --early_stopping 30 \
     --cuda \
     --seed 42 

@@ -64,7 +64,7 @@ class Trainer:
         
         # Setup metrics tracking
         self.train_losses = []
-        self.train_accuracies = []
+        self.train_f1s = []
         self.val_precisions = []
         self.val_recalls = []
         self.val_f1s = []
@@ -93,11 +93,11 @@ class Trainer:
         
         for epoch in range(1, self.args.epochs + 1):
             # Train for one epoch
-            train_loss, train_acc = self._train_epoch(train_loader, epoch)
+            train_loss, train_f1 = self._train_epoch(train_loader, epoch)
             
             # Record training metrics
             self.train_losses.append(train_loss)
-            self.train_accuracies.append(train_acc)
+            self.train_f1s.append(train_f1)
             
             # Evaluate on dev set
             dev_metrics = self.evaluate(dev_loader)
@@ -111,7 +111,7 @@ class Trainer:
             # Print epoch summary
             print(f"Epoch {epoch}/{self.args.epochs} - "
                   f"Train Loss: {train_loss:.4f} | "
-                  f"Train Acc: {train_acc:.2f}% | "
+                  f"Train F1: {train_f1:.2f}% | "
                   f"Validation: P: {precision:.2f}%, R: {recall:.2f}%, F1: {f1:.2f}%")
             
             # Update best model
@@ -184,12 +184,13 @@ class Trainer:
             
         Returns:
             avg_loss: Average loss for the epoch
-            accuracy: Training accuracy
+            f1: Training F1 score
         """
         self.model.train()
         total_loss = 0.0
-        correct_preds = 0
-        total_preds = 0
+        
+        all_predictions = []
+        all_true_tags = []
         
         # Create progress bar
         progress_bar = tqdm(total=len(train_loader), 
@@ -222,22 +223,23 @@ class Trainer:
             # Update parameters
             self.optimizer.step()
             
-            # Calculate accuracy
+            # Collect predictions and true tags for entity-level metrics
             with torch.no_grad():
                 predictions = self.model.predict(word_ids, mask, seq_lengths, char_ids)
+                true_tags = tag_ids.cpu().numpy()
+                
                 for i, length in enumerate(seq_lengths):
                     pred_tags = predictions[i][:length]
-                    true_tags = tag_ids[i][:length].cpu().numpy()
+                    true_tags_i = true_tags[i][:length]
                     
-                    # Count correct predictions
-                    correct_preds += sum(p == t for p, t in zip(pred_tags, true_tags))
-                    total_preds += length
+                    all_predictions.append([self.id_to_tag[tag] for tag in pred_tags])
+                    all_true_tags.append([self.id_to_tag[tag] for tag in true_tags_i])
             
             # Update statistics
             total_loss += loss.item()
             
             # Update progress bar
-            progress_bar.set_postfix(loss=loss.item(), avg_loss=total_loss/(i+1), acc=f"{(correct_preds/max(1, total_preds))*100:.2f}%")
+            progress_bar.set_postfix(loss=loss.item(), avg_loss=total_loss/(i+1))
             progress_bar.update(1)
         
         # Close progress bar
@@ -245,9 +247,14 @@ class Trainer:
         
         # Calculate average loss
         avg_loss = total_loss / len(train_loader)
-        accuracy = (correct_preds / max(1, total_preds)) * 100
         
-        return avg_loss, accuracy
+        # Calculate entity-level metrics
+        precision, recall, f1 = self._calculate_entity_metrics(all_true_tags, all_predictions)
+        
+        # Update progress bar with entity metrics
+        print(f"Train metrics - Precision: {precision*100:.2f}%, Recall: {recall*100:.2f}%, F1: {f1*100:.2f}%")
+        
+        return avg_loss, f1 * 100
     
     def evaluate(self, data_loader):
         """
@@ -430,18 +437,18 @@ class Trainer:
         line1 = ax1.plot(epochs, self.train_losses, color=color, marker='o', linestyle='-', label='Training Loss')
         ax1.tick_params(axis='y', labelcolor=color)
         
-        # Create a second y-axis for accuracy
+        # Create a second y-axis for F1 score
         ax2 = ax1.twinx()
         color = 'tab:red'
-        ax2.set_ylabel('Accuracy (%)', color=color)
-        line2 = ax2.plot(epochs, self.train_accuracies, color=color, marker='s', linestyle='-', label='Training Accuracy')
+        ax2.set_ylabel('F1 Score (%)', color=color)
+        line2 = ax2.plot(epochs, self.train_f1s, color=color, marker='s', linestyle='-', label='Training F1 Score')
         ax2.tick_params(axis='y', labelcolor=color)
         
         # Add grid
         ax1.grid(True, alpha=0.3)
         
         # Add title
-        plt.title('Training Loss and Accuracy')
+        plt.title('Training Loss and F1 Score')
         
         # Add combined legend
         lines = line1 + line2
@@ -501,7 +508,7 @@ class Trainer:
             'language', 'timestamp', 'total_epochs', 'best_model_epoch', 
             # Training metrics
             'training_time_seconds', 'training_time_formatted',
-            'final_train_loss', 'final_train_accuracy',
+            'final_train_loss', 'final_train_f1',
             # Validation metrics
             'best_val_precision', 'best_val_recall', 'best_val_f1', 
             # Test metrics
@@ -521,7 +528,7 @@ class Trainer:
             'training_time_seconds': f"{training_time:.2f}",
             'training_time_formatted': training_time_str,
             'final_train_loss': f"{self.train_losses[-1]:.4f}",
-            'final_train_accuracy': f"{self.train_accuracies[-1]:.2f}%",
+            'final_train_f1': f"{self.train_f1s[-1]:.2f}%",
             
             # Validation metrics (best values)
             'best_val_precision': f"{self.val_precisions[self.best_epoch-1] * 100:.2f}%",
@@ -554,13 +561,13 @@ class Trainer:
         # Write validation metrics history
         with open(history_file, mode='w', newline='') as file:
             writer = csv.writer(file)
-            writer.writerow(['epoch', 'loss', 'accuracy', 'precision', 'recall', 'f1'])
+            writer.writerow(['epoch', 'loss', 'train_f1', 'precision', 'recall', 'f1'])
             
             for i in range(len(self.train_losses)):
                 writer.writerow([
                     i+1, 
                     f"{self.train_losses[i]:.4f}",
-                    f"{self.train_accuracies[i]:.2f}",
+                    f"{self.train_f1s[i]:.2f}",
                     f"{self.val_precisions[i] * 100:.2f}",
                     f"{self.val_recalls[i] * 100:.2f}",
                     f"{self.val_f1s[i] * 100:.2f}"
