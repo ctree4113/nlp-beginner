@@ -84,6 +84,9 @@ class Trainer:
         """Train the model"""
         print(f"Training on {self.device}")
         
+        # Get parameter suffix for file naming if it exists
+        param_suffix = getattr(self.args, 'param_suffix', '')
+        
         for epoch in range(1, self.args.epochs + 1):
             # Train for one epoch
             train_loss, train_acc = self._train_epoch(epoch)
@@ -119,6 +122,16 @@ class Trainer:
                 print(f"Early stopping at epoch {epoch}")
                 break
         
+        # Save training history
+        history = {
+            'train_loss': self.train_loss_history,
+            'train_accuracy': self.train_acc_history,
+            'val_loss': self.valid_loss_history,
+            'val_accuracy': self.valid_acc_history
+        }
+        with open(os.path.join(self.args.output_dir, f'training_history{param_suffix}.json'), 'w') as f:
+            json.dump(history, f)
+        
         # Load best model
         self._load_model()
         
@@ -126,11 +139,40 @@ class Trainer:
         test_loss, test_acc = self._evaluate(self.test_loader, "Test")
         print(f"Test Loss: {test_loss:.4f} | Test Acc: {test_acc:.4f}")
         
-        # Generate detailed evaluation report
+        # Generate detailed report
         self._generate_report()
         
-        # Plot metrics history
+        # Plot metrics
         self._plot_metrics()
+        
+        # Save results
+        results = {
+            'accuracy': test_acc,
+            'loss': test_loss,
+            'train_time': time.time() - self.start_time,
+            'best_valid_acc': self.best_valid_acc,
+            'epochs_trained': epoch
+        }
+        
+        # Add more detailed metrics from classification report
+        report_file = os.path.join(self.args.output_dir, f'classification_report{param_suffix}.txt')
+        if os.path.exists(report_file):
+            with open(report_file, 'r') as f:
+                report_text = f.read()
+            
+            # Extract weighted avg values
+            lines = report_text.strip().split('\n')
+            weighted_avg_line = [line for line in lines if 'weighted avg' in line]
+            if weighted_avg_line:
+                parts = weighted_avg_line[0].split()
+                results['precision'] = float(parts[2])
+                results['recall'] = float(parts[3])
+                results['f1'] = float(parts[4])
+        
+        with open(os.path.join(self.args.output_dir, f'results{param_suffix}.json'), 'w') as f:
+            json.dump(results, f)
+        
+        return results
     
     def _train_epoch(self, epoch):
         """
@@ -248,6 +290,9 @@ class Trainer:
         """Save model checkpoint"""
         os.makedirs(self.args.output_dir, exist_ok=True)
         
+        # Get parameter suffix for file naming if it exists
+        param_suffix = getattr(self.args, 'param_suffix', '')
+        
         # Save only necessary states, avoid saving the entire args object
         checkpoint = {
             'model_state_dict': self.model.state_dict(),
@@ -260,32 +305,32 @@ class Trainer:
                 'model_type': self.args.model_type
             }
         }
-        torch.save(checkpoint, os.path.join(self.args.output_dir, 'best_model.pt'))
-        print(f"Model saved to {os.path.join(self.args.output_dir, 'best_model.pt')}")
+        model_path = os.path.join(self.args.output_dir, f'best_model{param_suffix}.pt')
+        torch.save(checkpoint, model_path)
+        print(f"Model saved to {model_path}")
     
     def _load_model(self):
         """Load model checkpoint"""
-        model_path = os.path.join(self.args.output_dir, 'best_model.pt')
+        # Get parameter suffix for file naming if it exists
+        param_suffix = getattr(self.args, 'param_suffix', '')
+        
+        model_path = os.path.join(self.args.output_dir, f'best_model{param_suffix}.pt')
         if not os.path.exists(model_path):
             print(f"No model found at {model_path}, skipping model loading")
             return
-            
-        try:
-            # Try using weights-only loading method (PyTorch 2.6 default)
-            checkpoint = torch.load(model_path)
-        except Exception as e:
-            # If failed, try using non-weights-only loading method
-            print(f"Warning: Failed to load with weights_only=True. Trying with weights_only=False: {str(e)}")
-            checkpoint = torch.load(model_path, weights_only=False)
-            
+        
+        checkpoint = torch.load(model_path, map_location=self.device)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.best_valid_acc = checkpoint['best_valid_acc']
-        print(f"Successfully loaded model with validation accuracy: {self.best_valid_acc:.4f}")
+        print(f"Model loaded from {model_path}")
     
     def _generate_report(self):
         """Generate detailed evaluation report"""
         self.model.eval()
+        
+        # Get parameter suffix for file naming if it exists
+        param_suffix = getattr(self.args, 'param_suffix', '')
         
         # Collect predictions and labels
         all_preds = []
@@ -318,11 +363,14 @@ class Trainer:
         print(report)
         
         # Save classification report
-        with open(os.path.join(self.args.output_dir, 'classification_report.txt'), 'w') as f:
+        with open(os.path.join(self.args.output_dir, f'classification_report{param_suffix}.txt'), 'w') as f:
             f.write(report)
         
         # Generate confusion matrix
         cm = confusion_matrix(all_labels, all_preds)
+        
+        # Save confusion matrix as numpy array
+        np.save(os.path.join(self.args.output_dir, f'confusion_matrix{param_suffix}.npy'), cm)
         
         # Plot confusion matrix
         plt.figure(figsize=(10, 8))
@@ -333,10 +381,13 @@ class Trainer:
         plt.ylabel('True')
         plt.title('Confusion Matrix')
         plt.tight_layout()
-        plt.savefig(os.path.join(self.args.output_dir, 'confusion_matrix.png'))
+        plt.savefig(os.path.join(self.args.output_dir, f'confusion_matrix{param_suffix}.png'))
     
     def _plot_metrics(self):
         """Plot training and validation metrics"""
+        # Get parameter suffix for file naming if it exists
+        param_suffix = getattr(self.args, 'param_suffix', '')
+        
         # Create figure
         plt.figure(figsize=(12, 5))
         
@@ -362,7 +413,7 @@ class Trainer:
         
         # Save figure
         plt.tight_layout()
-        plt.savefig(os.path.join(self.args.output_dir, 'metrics.png'))
+        plt.savefig(os.path.join(self.args.output_dir, f'metrics{param_suffix}.png'))
 
 
 class Evaluator:

@@ -272,8 +272,9 @@ class AttentionLayer(nn.Module):
             hypothesis_mask: Hypothesis mask, shape (batch_size, hypothesis_len)
             
         Returns:
-            attended_premise: Attention-weighted premise, shape (batch_size, hypothesis_len, hidden_dim)
-            attended_hypothesis: Attention-weighted hypothesis, shape (batch_size, premise_len, hidden_dim)
+            tuple containing:
+                - tuple of (attended_premise, attended_hypothesis): Attention-weighted representations
+                - p2h_attention: Premise-to-hypothesis attention weights
         """
         # Calculate actual dimensions
         batch_size, premise_len, hidden_dim = premise.size()
@@ -318,7 +319,7 @@ class AttentionLayer(nn.Module):
         # Weighted premise representation for each hypothesis word
         attended_premise = torch.bmm(h2p_attention, premise)  # (batch_size, hypothesis_len, hidden_dim)
         
-        return attended_premise, attended_hypothesis
+        return (attended_premise, attended_hypothesis), p2h_attention
 
 
 class ESIM(nn.Module):
@@ -385,120 +386,181 @@ class ESIM(nn.Module):
         # Store model configuration
         self.use_tree_lstm = use_tree_lstm
     
-    def forward(self, premise_ids, hypothesis_ids, premise_mask=None, hypothesis_mask=None):
+    def forward(self, premise_ids, hypothesis_ids, premise_mask=None, hypothesis_mask=None, return_attention=False):
         """
         Forward pass
         
         Args:
-            premise_ids: Premise IDs, shape (batch_size, premise_len)
-            hypothesis_ids: Hypothesis IDs, shape (batch_size, hypothesis_len)
-            premise_mask: Premise mask, shape (batch_size, premise_len)
-            hypothesis_mask: Hypothesis mask, shape (batch_size, hypothesis_len)
+            premise_ids: Premise token ids, shape (batch_size, seq_len)
+            hypothesis_ids: Hypothesis token ids, shape (batch_size, seq_len)
+            premise_mask: Premise mask, shape (batch_size, seq_len)
+            hypothesis_mask: Hypothesis mask, shape (batch_size, seq_len)
+            return_attention: Whether to return attention weights
             
         Returns:
-            logits: Classification logits, shape (batch_size, num_classes)
+            logits: Logits for each class, shape (batch_size, num_classes)
+            attention_weights: Attention weights if return_attention is True
         """
-        # Word embedding
-        premise_embedded = self.embedding(premise_ids)  # (batch_size, premise_len, embedding_dim)
-        hypothesis_embedded = self.embedding(hypothesis_ids)  # (batch_size, hypothesis_len, embedding_dim)
+        # Embedding
+        premise_embedded = self.embedding(premise_ids)
+        hypothesis_embedded = self.embedding(hypothesis_ids)
         
-        # Get actual sequence lengths
-        batch_size, premise_len, _ = premise_embedded.size()
-        _, hypothesis_len, _ = hypothesis_embedded.size()
+        # Encoding
+        if self.use_tree_lstm:
+            premise_encoded = self.input_encoder(premise_embedded, premise_mask)
+            hypothesis_encoded = self.input_encoder(hypothesis_embedded, hypothesis_mask)
+        else:
+            premise_encoded = self.input_encoder(premise_embedded, premise_mask)
+            hypothesis_encoded = self.input_encoder(hypothesis_embedded, hypothesis_mask)
         
-        # Trim masks to match actual sequence lengths
-        if premise_mask is not None and hypothesis_mask is not None:
-            premise_mask = premise_mask[:, :premise_len]
-            hypothesis_mask = hypothesis_mask[:, :hypothesis_len]
+        # Get actual lengths from encoded representations
+        batch_size, premise_len, hidden_dim = premise_encoded.size()
+        _, hypothesis_len, _ = hypothesis_encoded.size()
+        
+        # Attention
+        attention_output, attention_weights = self.attention(
+            premise_encoded, 
+            hypothesis_encoded, 
+            premise_mask, 
+            hypothesis_mask
+        )
+        premise_attended, hypothesis_attended = attention_output
+        
+        # Ensure dimensions match (attended representations might have different lengths)
+        # The issue is usually that the attended tensors might be shorter due to mask truncation
+        if premise_encoded.size(1) != premise_attended.size(1):
+            # Truncate the longer one to match
+            min_premise_len = min(premise_encoded.size(1), premise_attended.size(1))
+            premise_encoded = premise_encoded[:, :min_premise_len, :]
+            premise_attended = premise_attended[:, :min_premise_len, :]
+            if premise_mask is not None:
+                premise_mask = premise_mask[:, :min_premise_len]
+        
+        if hypothesis_encoded.size(1) != hypothesis_attended.size(1):
+            # Truncate the longer one to match
+            min_hypothesis_len = min(hypothesis_encoded.size(1), hypothesis_attended.size(1))
+            hypothesis_encoded = hypothesis_encoded[:, :min_hypothesis_len, :]
+            hypothesis_attended = hypothesis_attended[:, :min_hypothesis_len, :]
+            if hypothesis_mask is not None:
+                hypothesis_mask = hypothesis_mask[:, :min_hypothesis_len]
+        
+        # Create enhanced representation
+        premise_enhanced = torch.cat([
+            premise_encoded, 
+            premise_attended, 
+            premise_encoded - premise_attended, 
+            premise_encoded * premise_attended
+        ], dim=-1)
+        
+        hypothesis_enhanced = torch.cat([
+            hypothesis_encoded, 
+            hypothesis_attended, 
+            hypothesis_encoded - hypothesis_attended, 
+            hypothesis_encoded * hypothesis_attended
+        ], dim=-1)
         
         # Apply dropout
-        premise_embedded = self.dropout(premise_embedded)
-        hypothesis_embedded = self.dropout(hypothesis_embedded)
+        premise_enhanced = self.dropout(premise_enhanced)
+        hypothesis_enhanced = self.dropout(hypothesis_enhanced)
         
-        # Input encoding
-        premise_encoded = self.input_encoder(premise_embedded, premise_mask)  # (batch_size, premise_len, hidden_dim*2 or hidden_dim)
-        hypothesis_encoded = self.input_encoder(hypothesis_embedded, hypothesis_mask)  # (batch_size, hypothesis_len, hidden_dim*2 or hidden_dim)
-        
-        # Attention interaction
-        attended_premise, attended_hypothesis = self.attention(
-            premise_encoded, hypothesis_encoded, premise_mask, hypothesis_mask
-        )
-        
-        # Enhanced representation
+        # Composition
         if self.use_tree_lstm:
-            # For Tree-LSTM, the encoded output dimension is hidden_dim
-            premise_enhanced = torch.cat([
-                premise_encoded,
-                attended_hypothesis,
-                premise_encoded * attended_hypothesis,
-                premise_encoded - attended_hypothesis
-            ], dim=2)  # (batch_size, premise_len, hidden_dim*4)
-            
-            hypothesis_enhanced = torch.cat([
-                hypothesis_encoded,
-                attended_premise,
-                hypothesis_encoded * attended_premise,
-                hypothesis_encoded - attended_premise
-            ], dim=2)  # (batch_size, hypothesis_len, hidden_dim*4)
+            premise_composed = self.composition(premise_enhanced, premise_mask)
+            hypothesis_composed = self.composition(hypothesis_enhanced, hypothesis_mask)
         else:
-            # For BiLSTM, the encoded output dimension is hidden_dim*2
-            premise_enhanced = torch.cat([
-                premise_encoded,
-                attended_hypothesis,
-                premise_encoded * attended_hypothesis,
-                premise_encoded - attended_hypothesis
-            ], dim=2)  # (batch_size, premise_len, hidden_dim*8)
-            
-            hypothesis_enhanced = torch.cat([
-                hypothesis_encoded,
-                attended_premise,
-                hypothesis_encoded * attended_premise,
-                hypothesis_encoded - attended_premise
-            ], dim=2)  # (batch_size, hypothesis_len, hidden_dim*8)
-        
-        # Local inference modeling
-        premise_composed = self.composition(premise_enhanced, premise_mask)  # (batch_size, premise_len, hidden_dim*2 or hidden_dim)
-        hypothesis_composed = self.composition(hypothesis_enhanced, hypothesis_mask)  # (batch_size, hypothesis_len, hidden_dim*2 or hidden_dim)
+            premise_composed = self.composition(premise_enhanced, premise_mask)
+            hypothesis_composed = self.composition(hypothesis_enhanced, hypothesis_mask)
         
         # Pooling
         # Max pooling
-        premise_max_pooled, _ = torch.max(premise_composed, dim=1)  # (batch_size, hidden_dim*2 or hidden_dim)
-        hypothesis_max_pooled, _ = torch.max(hypothesis_composed, dim=1)  # (batch_size, hidden_dim*2 or hidden_dim)
+        premise_max_pooled = self._max_pooling(premise_composed, premise_mask)
+        hypothesis_max_pooled = self._max_pooling(hypothesis_composed, hypothesis_mask)
         
-        # Average pooling - Ensure mask dimensions match
-        if premise_mask is not None:
-            # Get actual dimensions of composed representations
-            batch_size, premise_composed_len, hidden_dim = premise_composed.size()
-            _, hypothesis_composed_len, _ = hypothesis_composed.size()
-            
-            # Resize masks to match the composed feature dimensions
-            premise_mask_pooling = premise_mask[:, :premise_composed_len]
-            hypothesis_mask_pooling = hypothesis_mask[:, :hypothesis_composed_len]
-            
-            # Calculate effective sequence lengths
-            premise_lengths = premise_mask_pooling.sum(dim=1, keepdim=True).float()  # (batch_size, 1)
-            premise_lengths = torch.clamp(premise_lengths, min=1.0)  # Prevent division by zero
-            
-            # Apply masks and calculate average values
-            premise_avg_pooled = torch.sum(premise_composed * premise_mask_pooling.unsqueeze(2).float(), dim=1) / premise_lengths  # (batch_size, hidden_dim*2 or hidden_dim)
-            
-            # Perform the same operation for hypothesis sequence
-            hypothesis_lengths = hypothesis_mask_pooling.sum(dim=1, keepdim=True).float()  # (batch_size, 1)
-            hypothesis_lengths = torch.clamp(hypothesis_lengths, min=1.0)  # Prevent division by zero
-            hypothesis_avg_pooled = torch.sum(hypothesis_composed * hypothesis_mask_pooling.unsqueeze(2).float(), dim=1) / hypothesis_lengths  # (batch_size, hidden_dim*2 or hidden_dim)
-        else:
-            premise_avg_pooled = torch.mean(premise_composed, dim=1)  # (batch_size, hidden_dim*2 or hidden_dim)
-            hypothesis_avg_pooled = torch.mean(hypothesis_composed, dim=1)  # (batch_size, hidden_dim*2 or hidden_dim)
+        # Mean pooling
+        premise_mean_pooled = self._mean_pooling(premise_composed, premise_mask)
+        hypothesis_mean_pooled = self._mean_pooling(hypothesis_composed, hypothesis_mask)
         
-        # Concatenate pooling results
+        # Concatenate
         pooled = torch.cat([
-            premise_max_pooled,
-            premise_avg_pooled,
-            hypothesis_max_pooled,
-            hypothesis_avg_pooled
-        ], dim=1)  # (batch_size, hidden_dim*8 or hidden_dim*4)
+            premise_max_pooled, premise_mean_pooled,
+            hypothesis_max_pooled, hypothesis_mean_pooled
+        ], dim=-1)
         
         # Classification
-        logits = self.classifier(pooled)  # (batch_size, num_classes)
+        pooled = self.dropout(pooled)
+        logits = self.classifier(pooled)
         
-        return logits 
+        if return_attention:
+            return logits, attention_weights
+        else:
+            return logits
+
+    def _max_pooling(self, x, mask=None):
+        """
+        Max pooling operation
+        
+        Args:
+            x: Input tensor, shape (batch_size, seq_len, hidden_dim)
+            mask: Mask tensor, shape (batch_size, seq_len)
+            
+        Returns:
+            max_pooled: Max pooled tensor, shape (batch_size, hidden_dim)
+        """
+        if mask is not None:
+            # Ensure mask has the correct length (truncate or pad)
+            seq_len = x.size(1)
+            if mask.size(1) != seq_len:
+                # Truncate or pad mask to match x's sequence length
+                if mask.size(1) > seq_len:
+                    mask = mask[:, :seq_len]
+                else:
+                    # This shouldn't happen, but just in case
+                    pad_size = seq_len - mask.size(1)
+                    mask = F.pad(mask, (0, pad_size), value=0)
+                    
+            # Convert mask to float and expand to match x's dimensions
+            mask = mask.float().unsqueeze(-1).expand_as(x)
+            # Set masked positions to large negative value
+            x = x * mask + (1 - mask) * -1e9
+        
+        # Apply max pooling
+        max_pooled, _ = torch.max(x, dim=1)
+        return max_pooled
+    
+    def _mean_pooling(self, x, mask=None):
+        """
+        Mean pooling operation
+        
+        Args:
+            x: Input tensor, shape (batch_size, seq_len, hidden_dim)
+            mask: Mask tensor, shape (batch_size, seq_len)
+            
+        Returns:
+            mean_pooled: Mean pooled tensor, shape (batch_size, hidden_dim)
+        """
+        if mask is not None:
+            # Ensure mask has the correct length (truncate or pad)
+            seq_len = x.size(1)
+            if mask.size(1) != seq_len:
+                # Truncate or pad mask to match x's sequence length
+                if mask.size(1) > seq_len:
+                    mask = mask[:, :seq_len]
+                else:
+                    # This shouldn't happen, but just in case
+                    pad_size = seq_len - mask.size(1)
+                    mask = F.pad(mask, (0, pad_size), value=0)
+            
+            # Convert mask to float and expand to match x's dimensions
+            mask = mask.float().unsqueeze(-1).expand_as(x)
+            # Apply mask (zeros will not contribute to mean)
+            x = x * mask
+            # Compute sum and divide by the sum of mask (along seq_len dimension)
+            sum_mask = torch.sum(mask, dim=1)
+            # Avoid division by zero
+            sum_mask = torch.clamp(sum_mask, min=1e-9)
+            mean_pooled = torch.sum(x, dim=1) / sum_mask
+        else:
+            # Simple mean if no mask provided
+            mean_pooled = torch.mean(x, dim=1)
+        
+        return mean_pooled 
