@@ -48,8 +48,8 @@ class Trainer:
             self.optimizer = optim.SGD(
                 model.parameters(), 
                 lr=args.learning_rate, 
-                momentum=0.9, 
-                weight_decay=args.weight_decay
+                weight_decay=args.weight_decay,
+                momentum=0.9
             )
         else:
             raise ValueError(f"Unsupported optimizer: {args.optimizer}")
@@ -59,23 +59,25 @@ class Trainer:
             self.optimizer, 
             mode='max', 
             factor=0.5, 
-            patience=args.lr_patience
+            patience=args.lr_patience, 
+            verbose=True
         )
         
         # Set loss function
         self.criterion = nn.CrossEntropyLoss()
         
-        # Initialize best validation accuracy
+        # Initialize metrics
         self.best_valid_acc = 0.0
-        
-        # Initialize early stopping counter
         self.early_stop_counter = 0
         
-        # Initialize metrics history
+        # Initialize history
         self.train_loss_history = []
         self.train_acc_history = []
         self.valid_loss_history = []
         self.valid_acc_history = []
+        
+        # Initialize training start time
+        self.start_time = time.time()
         
         # Create output directory
         os.makedirs(args.output_dir, exist_ok=True)
@@ -83,6 +85,9 @@ class Trainer:
     def train(self):
         """Train the model"""
         print(f"Training on {self.device}")
+        
+        # Reset start time at the beginning of training
+        self.start_time = time.time()
         
         # Get parameter suffix for file naming if it exists
         param_suffix = getattr(self.args, 'param_suffix', '')
