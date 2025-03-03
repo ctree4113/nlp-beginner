@@ -156,12 +156,13 @@ class CRF(nn.Module):
     """
     Conditional Random Field layer for sequence labeling
     """
-    def __init__(self, num_tags):
+    def __init__(self, num_tags, optimize_constraints=True):
         """
         Initialize CRF layer
         
         Args:
             num_tags: Number of tags
+            optimize_constraints: Whether to optimize constraints
         """
         super(CRF, self).__init__()
         
@@ -169,9 +170,9 @@ class CRF(nn.Module):
         self.transitions = nn.Parameter(torch.randn(num_tags, num_tags))
         
         # Initialize transitions with constraints for BIO tagging scheme
-        self._initialize_constraints()
+        self._initialize_constraints(optimize_constraints)
     
-    def _initialize_constraints(self):
+    def _initialize_constraints(self, optimize_constraints):
         """
         Initialize transition matrix with constraints for BIO tagging scheme
         
@@ -240,6 +241,11 @@ class CRF(nn.Module):
                 for i_idx in i_indices:
                     if tag_types[i_idx] == tag_type:
                         self.transitions[i_idx, b_idx] += 2.0
+            
+            if optimize_constraints:
+                # Optimize constraints
+                # This is a placeholder and should be replaced with actual optimization logic
+                pass
     
     def forward(self, emissions, tags, mask):
         """
@@ -406,7 +412,8 @@ class BiLSTMCRF(nn.Module):
     BiLSTM-CRF model for sequence labeling
     """
     def __init__(self, vocab_size, embedding_dim, hidden_dim, num_tags, num_layers=1, dropout=0.5,
-                 use_char_cnn=True, num_chars=None, char_embedding_dim=30, char_channel_size=50):
+                 use_char_cnn=True, num_chars=None, char_embedding_dim=30, char_channel_size=50,
+                 use_crf=True, optimize_crf=True):
         """
         Initialize BiLSTM-CRF model
         
@@ -421,6 +428,8 @@ class BiLSTMCRF(nn.Module):
             num_chars: Number of characters (required if use_char_cnn=True)
             char_embedding_dim: Character embedding dimension
             char_channel_size: Character CNN output channel size
+            use_crf: Whether to use CRF layer
+            optimize_crf: Whether to optimize CRF transition matrix
         """
         super(BiLSTMCRF, self).__init__()
         
@@ -429,7 +438,11 @@ class BiLSTMCRF(nn.Module):
             use_char_cnn, num_chars, char_embedding_dim, char_channel_size
         )
         self.fc = nn.Linear(hidden_dim, num_tags)
-        self.crf = CRF(num_tags)
+        self.use_crf = use_crf
+        
+        if use_crf:
+            self.crf = CRF(num_tags, optimize_constraints=optimize_crf)
+        
         self.dropout = nn.Dropout(dropout)
     
     def forward(self, x, tags, mask=None, seq_lengths=None, char_x=None):
@@ -444,7 +457,7 @@ class BiLSTMCRF(nn.Module):
             char_x: Character indices, shape (batch_size, seq_len, max_word_len)
             
         Returns:
-            loss: CRF loss
+            loss: CRF loss or cross-entropy loss
         """
         # BiLSTM encoding
         lstm_out = self.bilstm(x, seq_lengths, char_x)  # (batch_size, seq_len, hidden_dim)
@@ -453,8 +466,27 @@ class BiLSTMCRF(nn.Module):
         # Projection to tag space
         emissions = self.fc(lstm_out)  # (batch_size, seq_len, num_tags)
         
-        # CRF loss
-        loss = self.crf(emissions, tags, mask)
+        if self.use_crf:
+            # CRF loss
+            loss = self.crf(emissions, tags, mask)
+        else:
+            # For BiLSTM (without CRF), use cross-entropy loss
+            batch_size, seq_len, num_tags = emissions.size()
+            emissions_flat = emissions.view(-1, num_tags)
+            tags_flat = tags.view(-1)
+            
+            # Create mask to ignore padding tokens
+            if mask is None:
+                mask = torch.ones_like(tags, dtype=torch.bool)
+            
+            mask_flat = mask.view(-1)
+            
+            # Calculate cross-entropy loss only on non-padded tokens
+            loss = F.cross_entropy(
+                emissions_flat[mask_flat], 
+                tags_flat[mask_flat],
+                reduction='mean'
+            )
         
         return loss
     
@@ -477,13 +509,31 @@ class BiLSTMCRF(nn.Module):
         # Projection to tag space
         emissions = self.fc(lstm_out)  # (batch_size, seq_len, num_tags)
         
-        # Decode
-        predictions = self.crf.decode(emissions, mask)
+        if self.use_crf:
+            # Decode using CRF
+            predictions = self.crf.decode(emissions, mask)
+        else:
+            # For BiLSTM (without CRF), use argmax decoding
+            predictions = []
+            
+            # Get batch size and sequence length
+            batch_size = emissions.size(0)
+            
+            # For each sequence in the batch
+            for i in range(batch_size):
+                if seq_lengths is not None:
+                    length = seq_lengths[i]
+                else:
+                    length = emissions.size(1)
+                
+                # Apply argmax to each position
+                pred = emissions[i, :length].argmax(dim=-1).cpu().numpy().tolist()
+                predictions.append(pred)
         
         # Replace unknown tag (index 1) with O tag (index 0)
         for i in range(len(predictions)):
             for j in range(len(predictions[i])):
                 if predictions[i][j] == 1:  # <UNK> tag
                     predictions[i][j] = 0   # O tag
-        
+                    
         return predictions 

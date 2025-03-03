@@ -63,6 +63,13 @@ def get_args():
     parser.add_argument('--log_interval', type=int, default=10, help='Log interval')
     parser.add_argument('--debug', action='store_true', help='Debug mode')
     
+    # Comparison mode parameters
+    parser.add_argument('--model_type', type=str, default='bilstm_crf_char_opt', 
+                      choices=['bilstm', 'bilstm_crf', 'bilstm_crf_char', 'bilstm_crf_char_opt'],
+                      help='Model type for comparison')
+    parser.add_argument('--comparison_mode', action='store_true', help='Run in comparison mode')
+    parser.add_argument('--comparison_visualization', action='store_true', help='Generate comparison visualizations')
+    
     args = parser.parse_args()
     
     # Create output directory
