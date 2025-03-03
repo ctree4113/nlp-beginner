@@ -179,6 +179,7 @@ class CRF(nn.Module):
         1. No transitions from O to I-X
         2. No transitions from B-X/I-X to I-Y where X != Y
         3. No transitions from START to I-X (handled implicitly in decode method)
+        4. Special handling for <UNK> tag
         """
         # Get number of tags
         num_tags = self.transitions.size(0)
@@ -186,53 +187,59 @@ class CRF(nn.Module):
         # Initialize with small random values
         nn.init.xavier_normal_(self.transitions)
         
-        # Find tag types from tag indices
-        # Assuming tag order is: O, B-PER, I-PER, B-ORG, I-ORG, etc.
-        tag_types = {}
+        # Assume standard order of tags in BIO scheme:
+        # 0: O (Outside)
+        # 1: <UNK> (Unknown tag)
+        # 2+: B-X, I-X, B-Y, I-Y, etc.
+        
+        # Find all B- and I- tags
+        o_index = 0  # O tag index
+        unk_index = 1  # <UNK> tag index
         b_indices = []
         i_indices = []
-        o_index = -1
+        tag_types = {}
         
-        # Identify tag types based on tag names (this would be better with actual tag names)
-        for i in range(num_tags):
-            if i == 0:  # Assuming 0 is O tag
-                o_index = i
-            elif i % 2 == 1:  # Odd indices are B-X tags
-                tag_type = (i - 1) // 2
+        # Identify tag types based on BIO scheme
+        # Starting from index 2 (after O and <UNK>)
+        for i in range(2, num_tags):
+            if (i - 2) % 2 == 0:  # Even offsets are B-X tags
+                tag_type = (i - 2) // 2
                 b_indices.append(i)
                 tag_types[i] = tag_type
-            else:  # Even indices (except 0) are I-X tags
-                tag_type = (i - 2) // 2
+            else:  # Odd offsets are I-X tags
+                tag_type = (i - 3) // 2  # Maps to corresponding B-X
                 i_indices.append(i)
                 tag_types[i] = tag_type
         
         # Apply constraints
         with torch.no_grad():
             # Constraint 1: No transitions from O to I-X
-            if o_index != -1:
-                for i in i_indices:
-                    self.transitions[i, o_index] = -10000.0
+            for i in i_indices:
+                self.transitions[i, o_index] = -10000.0
+            
+            # Special handling for <UNK> tag
+            # Allow transitions to and from <UNK> with small penalty
+            for i in range(num_tags):
+                if i != unk_index:
+                    # Slightly penalize transitions to <UNK>
+                    self.transitions[unk_index, i] = -1.0
+                    # Slightly penalize transitions from <UNK>
+                    self.transitions[i, unk_index] = -1.0
             
             # Constraint 2: No transitions from B-X/I-X to I-Y where X != Y
-            for i in range(1, num_tags):
-                if i in tag_types:  # This is a B-X or I-X tag
-                    tag_type_i = tag_types[i]
-                    for j in i_indices:  # For each I-Y tag
-                        tag_type_j = tag_types[j]
-                        if tag_type_i != tag_type_j:  # If X != Y
-                            self.transitions[j, i] = -10000.0
+            for i in b_indices + i_indices:  # For each B-X or I-X tag
+                tag_type_i = tag_types[i]
+                for j in i_indices:  # For each I-Y tag
+                    tag_type_j = tag_types[j]
+                    if tag_type_i != tag_type_j:  # X != Y
+                        self.transitions[j, i] = -10000.0
             
-            # Note: Constraint 3 (No transitions from START to I-X) is handled implicitly in the decode method
-            # We don't need to set it in the transition matrix
-            
-            # Add a preference for valid transitions
-            for i in b_indices:
-                if i in tag_types:
-                    tag_type_i = tag_types[i]
-                    for j in i_indices:
-                        if j in tag_types and tag_types[j] == tag_type_i:
-                            # B-X -> I-X is preferred
-                            self.transitions[j, i] = 5.0
+            # Constraint 3: Add small bonus for B-X to I-X transitions
+            for b_idx in b_indices:
+                tag_type = tag_types[b_idx]
+                for i_idx in i_indices:
+                    if tag_types[i_idx] == tag_type:
+                        self.transitions[i_idx, b_idx] += 2.0
     
     def forward(self, emissions, tags, mask):
         """
@@ -472,5 +479,11 @@ class BiLSTMCRF(nn.Module):
         
         # Decode
         predictions = self.crf.decode(emissions, mask)
+        
+        # Replace unknown tag (index 1) with O tag (index 0)
+        for i in range(len(predictions)):
+            for j in range(len(predictions[i])):
+                if predictions[i][j] == 1:  # <UNK> tag
+                    predictions[i][j] = 0   # O tag
         
         return predictions 

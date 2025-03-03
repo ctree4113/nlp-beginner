@@ -60,8 +60,8 @@ class CoNLLDataset(Dataset):
         # Convert words to indices
         word_ids = [self.word2idx.get(word, self.word2idx["<UNK>"]) for word in sentence]
         
-        # Convert tags to indices
-        tag_ids = [self.tag2idx[tag] for tag in tags]
+        # Convert tags to indices, handle unknown tags
+        tag_ids = [self.tag2idx.get(tag, self.tag2idx["<UNK>"]) for tag in tags]
         
         # Create sample
         sample = {
@@ -273,7 +273,7 @@ class DataProcessor:
     
     def _build_tag_map(self, tags_list):
         """
-        Build tag mapping
+        Build tag mapping following BIO tagging scheme
         
         Args:
             tags_list: List of tag lists, each corresponding to a sentence
@@ -286,15 +286,33 @@ class DataProcessor:
         for tags in tags_list:
             tag_set.update(tags)
         
-        # Build mapping
+        # Build mapping starting with special tags
         tag2idx = {
-            "O": 0  # Non-entity tag
+            "O": 0,     # Outside (non-entity) tag
+            "<UNK>": 1  # Unknown tag for handling unseen labels
         }
         
-        # Add other tags
-        for i, tag in enumerate(sorted(tag_set), start=1):
-            if tag != "O":  # O was already added
-                tag2idx[tag] = i
+        # Extract tag types (without B- or I- prefix)
+        entity_types = set()
+        for tag in tag_set:
+            if tag.startswith("B-") or tag.startswith("I-"):
+                entity_types.add(tag[2:])
+        
+        # Add BIO tags in consistent order (B-X, I-X, B-Y, I-Y, ...)
+        idx = 2
+        for entity_type in sorted(entity_types):
+            b_tag = f"B-{entity_type}"
+            i_tag = f"I-{entity_type}"
+            
+            # Add B-X tag
+            if b_tag in tag_set:
+                tag2idx[b_tag] = idx
+                idx += 1
+            
+            # Add I-X tag
+            if i_tag in tag_set:
+                tag2idx[i_tag] = idx
+                idx += 1
         
         return tag2idx
     

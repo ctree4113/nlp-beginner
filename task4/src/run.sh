@@ -1,18 +1,27 @@
 #!/bin/bash
 
 # Set default language to English, use provided parameter if available
-LANGUAGE=${1:-eng}
+Option=${1:-eng}
 
 export PYTHONPATH="$PYTHONPATH:$(pwd)"
 
+# Handle the 'clean' command to remove output directory
+if [ "$Option" = "clean" ]; then
+    echo "Cleaning output directory..."
+    rm -rf ../output
+    mkdir -p ../output
+    echo "Output directory cleaned successfully."
+    exit 0
+fi
+
 mkdir -p ../output
 
-echo "Training model for language: $LANGUAGE"
+echo "Training model for language: $Option"
 
 python main.py \
     --data_dir ../dataset \
     --output_dir ../output \
-    --language $LANGUAGE \
+    --language $Option \
     --max_seq_len 128 \
     --max_word_len 20 \
     --embedding_dim 100 \
@@ -24,7 +33,7 @@ python main.py \
     --char_channel_size 50 \
     --lr 0.001 \
     --batch_size 32 \
-    --epochs 50 \
+    --epochs 100 \
     --use_lr_scheduler \
     --scheduler_patience 3 \
     --scheduler_factor 0.5 \
