@@ -100,13 +100,12 @@ if [ "$OPTION" = "compare" ]; then
         --model_type bilstm_crf_char \
         --comparison_mode
     
-    # Generate comparison visualizations
-    echo "Generating comparison visualizations..."
+    # Generate comparison visualizations including matrix
+    echo "Generating comparison visualizations and matrix..."
     python ./main.py \
         --comparison_visualization \
         --output_dir ../output
-    
-    echo "Model comparison completed. Results saved to ../output/comparison"
+        
     exit 0
 fi
 

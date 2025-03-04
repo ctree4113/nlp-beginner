@@ -3,7 +3,10 @@ import time
 import torch
 import json
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
+import seaborn as sns
+from matplotlib.colors import LinearSegmentedColormap
 from data_processor import DataProcessor
 from models import BiLSTMCRF
 from trainer import Trainer
@@ -77,18 +80,20 @@ def create_model(args, data_processor):
     return model
 
 
-def generate_comparison_visualizations(output_dir):
+def generate_comparison_matrix(output_dir):
     """
-    Generate visualizations comparing different model architectures
+    generate the comparison matrix of the models
     
     Args:
-        output_dir: Output directory where comparison results are stored
+        output_dir: the path of the output directory
     """
+    print("Generating model comparison matrix...")
+    
     comparison_dir = os.path.join(output_dir, 'comparison')
     results_dir = os.path.join(comparison_dir, 'results')
     os.makedirs(results_dir, exist_ok=True)
     
-    # Model directories and names for legend
+    # model directories and names
     model_dirs = [
         'base_bilstm',
         'bilstm_crf',
@@ -101,87 +106,128 @@ def generate_comparison_visualizations(output_dir):
         'BiLSTM-CRF + Char CNN'
     ]
     
-    # Collect metrics from all models
-    models_metrics = []
+    # metric names and display names
+    metrics = ['test_precision', 'test_recall', 'test_f1']
+    metric_names = ['Precision', 'Recall', 'F1 Score']
+    
+    # collect all model metrics
+    all_metrics = []
+    
     for model_dir in model_dirs:
         model_path = os.path.join(comparison_dir, model_dir)
-        metrics_path = os.path.join(model_path, 'metrics', 'metrics.csv')
+        metrics_path = os.path.join(model_path, 'eng', 'metrics', 'metrics.csv')
         
         if os.path.exists(metrics_path):
             metrics_df = pd.read_csv(metrics_path)
-            models_metrics.append(metrics_df)
+            model_metrics = {}
+            
+            for metric in metrics:
+                # extract value from percentage string
+                value = float(metrics_df[metric].iloc[0].strip('%'))
+                model_metrics[metric] = value
+                
+            all_metrics.append(model_metrics)
+        else:
+            print(f"Warning: {metrics_path} not found")
+            all_metrics.append({metric: 0 for metric in metrics})
     
-    if not models_metrics:
-        print("No metrics found for comparison visualization")
+    if not all_metrics:
+        print("Error: No metrics data found")
         return
     
-    # Combine metrics into a single dataframe
-    combined_metrics = pd.concat(models_metrics, ignore_index=True)
+    # create data matrix
+    data_matrix = np.zeros((len(model_names), len(metrics)))
     
-    # Add model names
-    combined_metrics['model_name'] = model_names[:len(models_metrics)]
+    for i, model_metrics in enumerate(all_metrics):
+        for j, metric in enumerate(metrics):
+            data_matrix[i, j] = model_metrics[metric]
     
-    # Save combined metrics
-    combined_metrics.to_csv(os.path.join(results_dir, 'combined_metrics.csv'), index=False)
+    # save data to CSV
+    df = pd.DataFrame(data_matrix, index=model_names, columns=metric_names)
+    df.to_csv(os.path.join(results_dir, 'test_metrics_comparison.csv'))
     
-    # Extract test metrics
-    test_precision = []
-    test_recall = []
-    test_f1 = []
+    # generate heatmap
+    plt.figure(figsize=(10, 6))
     
-    for metrics in models_metrics:
-        test_precision.append(float(metrics['test_precision'].iloc[0].strip('%')))
-        test_recall.append(float(metrics['test_recall'].iloc[0].strip('%')))
-        test_f1.append(float(metrics['test_f1'].iloc[0].strip('%')))
+    # create custom color mapping - from light blue to dark blue
+    cmap = LinearSegmentedColormap.from_list('blue_gradient', ['#DCECF9', '#1E5AA8'])
     
-    # Create bar chart comparing test metrics
+    # draw heatmap
+    ax = sns.heatmap(data_matrix, annot=True, fmt='.2f', 
+                     xticklabels=metric_names, yticklabels=model_names,
+                     cmap=cmap, linewidths=0.5, cbar_kws={'label': 'Score (%)'})
+    
+    # set title and labels
+    plt.title('Model Performance Comparison Matrix', fontsize=16, pad=20)
+    plt.tight_layout()
+    
+    # save image
+    plt.savefig(os.path.join(results_dir, 'test_metrics_matrix.png'), dpi=300, bbox_inches='tight')
+    
+    # generate bar chart comparison
     plt.figure(figsize=(12, 8))
-    x = range(len(model_names[:len(models_metrics)]))
+    
+    x = np.arange(len(model_names))
     width = 0.25
     
-    plt.bar([i - width for i in x], test_precision, width, label='Precision', color='crimson')
-    plt.bar(x, test_recall, width, label='Recall', color='forestgreen')
-    plt.bar([i + width for i in x], test_f1, width, label='F1 Score', color='royalblue')
+    # draw bar chart
+    for i, metric in enumerate(metrics):
+        values = [model_metrics[metric] for model_metrics in all_metrics]
+        plt.bar(x + (i - 1) * width, values, width, 
+                label=metric_names[i], 
+                color=['#FF6B6B', '#4ECDC4', '#45B7D1'][i])
     
-    plt.xlabel('Model Architecture')
-    plt.ylabel('Score (%)')
-    plt.title('Performance Comparison of Different Model Architectures')
-    plt.xticks(x, model_names[:len(models_metrics)])
+    # set title and labels
+    plt.title('Model Performance Comparison', fontsize=16)
+    plt.xlabel('Model Architecture', fontsize=14)
+    plt.ylabel('Score (%)', fontsize=14)
+    plt.xticks(x, model_names)
     plt.ylim(0, 100)
     plt.legend()
     plt.grid(axis='y', alpha=0.3)
-    plt.tight_layout()
     
-    # Save comparison chart
-    plt.savefig(os.path.join(results_dir, 'model_comparison.png'))
+    # save image
+    plt.savefig(os.path.join(results_dir, 'test_metrics_bars.png'), dpi=300, bbox_inches='tight')
     
-    # Create a table-like figure
-    fig, ax = plt.figure(figsize=(12, 6)), plt.subplot(111)
-    ax.axis('tight')
+    # generate table image
+    plt.figure(figsize=(10, 4))
+    ax = plt.subplot(111, frame_on=False)
     ax.axis('off')
     
-    table_data = [
-        ['Model', 'Precision (%)', 'Recall (%)', 'F1 Score (%)']
-    ]
+    # create table data
+    table_data = [metric_names]
+    for i, name in enumerate(model_names):
+        table_data.append([f"{data_matrix[i, j]:.2f}" for j in range(len(metrics))])
     
-    for i, name in enumerate(model_names[:len(models_metrics)]):
-        table_data.append([
-            name,
-            f"{test_precision[i]:.2f}",
-            f"{test_recall[i]:.2f}",
-            f"{test_f1[i]:.2f}"
-        ])
+    # draw table
+    table = plt.table(cellText=table_data[1:],
+                      rowLabels=model_names,
+                      colLabels=table_data[0],
+                      loc='center',
+                      cellLoc='center',
+                      rowLoc='center')
     
-    table = ax.table(cellText=table_data, cellLoc='center', loc='center', colWidths=[0.4, 0.2, 0.2, 0.2])
+    # set table style
     table.auto_set_font_size(False)
     table.set_fontsize(12)
     table.scale(1, 1.5)
     
-    plt.title('Model Performance Metrics')
-    plt.tight_layout()
-    plt.savefig(os.path.join(results_dir, 'metrics_table.png'))
+    # save table image
+    plt.savefig(os.path.join(results_dir, 'test_metrics_table.png'), dpi=300, bbox_inches='tight')
     
-    print(f"Comparison visualizations saved to {results_dir}")
+    print(f"Model comparison matrix saved to {results_dir}")
+
+
+def generate_comparison_visualizations(output_dir):
+    """
+    Generate visualizations comparing different model architectures
+    
+    Args:
+        output_dir: the path of the output directory
+    """
+    
+    # Generate comparison matrix visualization
+    generate_comparison_matrix(output_dir)
 
 
 def main():
