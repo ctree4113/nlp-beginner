@@ -7,3 +7,9 @@ dataset/
 
 # glove
 glove/
+
+# pytorch model
+*.pt
+
+# numpy model
+*.npy
