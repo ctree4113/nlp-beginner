@@ -1,0 +1,48 @@
+{
+    "args": {
+        "data_dir": "../dataset",
+        "output_dir": "../output/compare_max_seq_len",
+        "max_seq_len": 200,
+        "batch_size": 64,
+        "model_type": "esim",
+        "embedding_dim": 100,
+        "hidden_dim": 300,
+        "dropout": 0.5,
+        "use_tree_lstm": false,
+        "pretrained_embedding": "glove",
+        "embedding_path": "../glove/glove.6B.100d.txt",
+        "freeze_embedding": false,
+        "epochs": 20,
+        "learning_rate": 0.0004,
+        "weight_decay": 0.0001,
+        "clip_grad": 10.0,
+        "early_stop_patience": 5,
+        "lr_patience": 2,
+        "optimizer": "adam",
+        "experiment": "max_seq_len",
+        "param_values": [
+            "50",
+            "100",
+            "150",
+            "200"
+        ],
+        "example": false,
+        "premise": null,
+        "hypothesis": null,
+        "analyze_attention": false,
+        "seed": 42,
+        "cuda": true,
+        "debug": false,
+        "param_name": "max_seq_len",
+        "param_value": 200
+    },
+    "metrics": {
+        "accuracy": 9824.0,
+        "precision": 0.77,
+        "recall": 0.77,
+        "f1": 0.76,
+        "train_time": 8885.533999443054
+    },
+    "train_time": 8885.533999443054,
+    "encoder_type": "BiLSTM"
+}

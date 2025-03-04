@@ -1,0 +1,1 @@
+{"accuracy": 0.7617060260586319, "loss": 0.5887117145897506, "train_time": 9726.680145978928, "best_valid_acc": 0.7659012395854501, "epochs_trained": 20, "precision": 0.76, "recall": 0.76, "f1": 0.76}
