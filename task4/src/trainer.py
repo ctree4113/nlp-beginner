@@ -337,23 +337,50 @@ class Trainer:
         # Calculate correct predictions (intersection of sets)
         correct_pred_set = unique_true_entities.intersection(unique_pred_entities)
         
-        # Calculate precision
-        if not unique_pred_entities:
-            precision = 0.0
-        else:
-            precision = len(correct_pred_set) / len(unique_pred_entities)
+        # Count entities by type
+        entity_type_counts = {}
+        for entity_type in set([e[0] for e in true_entities + pred_entities]):
+            true_type_count = sum(1 for e in unique_true_entities if e[0] == entity_type)
+            pred_type_count = sum(1 for e in unique_pred_entities if e[0] == entity_type)
+            correct_type_count = sum(1 for e in correct_pred_set if e[0] == entity_type)
+            
+            if true_type_count == 0 and pred_type_count == 0:
+                continue
+                
+            type_precision = correct_type_count / pred_type_count if pred_type_count > 0 else 0.0
+            type_recall = correct_type_count / true_type_count if true_type_count > 0 else 0.0
+            type_f1 = 2 * type_precision * type_recall / (type_precision + type_recall) if (type_precision + type_recall) > 0 else 0.0
+            
+            entity_type_counts[entity_type] = {
+                'true': true_type_count,
+                'pred': pred_type_count,
+                'correct': correct_type_count,
+                'precision': type_precision * 100,
+                'recall': type_recall * 100,
+                'f1': type_f1 * 100
+            }
         
-        # Calculate recall
-        if not unique_true_entities:
-            recall = 0.0
-        else:
-            recall = len(correct_pred_set) / len(unique_true_entities)
+        # Print entity type statistics
+        print("\nEntity Type Statistics:")
+        print(f"{'Entity Type':<10} {'True':<8} {'Pred':<8} {'Correct':<8} {'Precision':<10} {'Recall':<10} {'F1':<10}")
+        print("-" * 70)
         
-        # Calculate F1
-        if precision + recall == 0:
-            f1 = 0.0
-        else:
-            f1 = 2 * precision * recall / (precision + recall)
+        for entity_type, metrics in sorted(entity_type_counts.items()):
+            print(f"{entity_type:<10} {metrics['true']:<8} {metrics['pred']:<8} {metrics['correct']:<8} "
+                  f"{metrics['precision']:<10.2f} {metrics['recall']:<10.2f} {metrics['f1']:<10.2f}")
+        
+        # Calculate overall metrics
+        total_true = len(unique_true_entities)
+        total_pred = len(unique_pred_entities)
+        total_correct = len(correct_pred_set)
+        
+        print("-" * 70)
+        print(f"{'TOTAL':<10} {total_true:<8} {total_pred:<8} {total_correct:<8}")
+        
+        # Calculate precision, recall, and F1
+        precision = total_correct / total_pred if total_pred > 0 else 0.0
+        recall = total_correct / total_true if total_true > 0 else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
         
         return precision, recall, f1
     
@@ -386,7 +413,7 @@ class Trainer:
                 current_type = tag[2:]  # Remove 'I-'
                 if entity_type is None:
                     # This is an invalid I- tag (not preceded by B- or I-)
-                    # Treat it as a B- tag
+                    # For the first token or after O, treat it as B- tag
                     entity_type = current_type
                     start = i
                 elif current_type != entity_type:
@@ -573,4 +600,72 @@ class Trainer:
                     f"{self.val_f1s[i] * 100:.2f}"
                 ])
         
-        print(f"Validation history saved to {history_file}") 
+        print(f"Validation history saved to {history_file}")
+    
+    def analyze_dataset_differences(self, train_loader, dev_loader):
+        """
+        Analyze entity type distribution in training and validation datasets
+        
+        Args:
+            train_loader: Training data loader
+            dev_loader: Validation data loader
+        """
+        print("\n============ Dataset Analysis ============")
+        
+        # Collect entity type statistics from training and validation sets
+        train_entity_types = self._collect_entity_type_stats(train_loader, "Training")
+        dev_entity_types = self._collect_entity_type_stats(dev_loader, "Validation")
+        
+        # Print entity type distribution
+        print("\nEntity Type Distribution:")
+        print(f"{'Entity Type':<10} {'Training Count':<15} {'Training %':<12} {'Validation Count':<15} {'Validation %':<12}")
+        print("-" * 70)
+        
+        all_entity_types = set(list(train_entity_types.keys()) + list(dev_entity_types.keys()))
+        train_total = sum(train_entity_types.values())
+        dev_total = sum(dev_entity_types.values())
+        
+        for entity_type in sorted(all_entity_types):
+            train_count = train_entity_types.get(entity_type, 0)
+            dev_count = dev_entity_types.get(entity_type, 0)
+            
+            train_ratio = train_count / train_total if train_total > 0 else 0
+            dev_ratio = dev_count / dev_total if dev_total > 0 else 0
+            
+            print(f"{entity_type:<10} {train_count:<15} {train_ratio*100:<12.2f}% {dev_count:<15} {dev_ratio*100:<12.2f}%")
+    
+    def _collect_entity_type_stats(self, data_loader, dataset_name):
+        """
+        Collect entity type statistics from a dataset
+        
+        Args:
+            data_loader: Data loader
+            dataset_name: Dataset name for display
+            
+        Returns:
+            entity_type_counts: Dictionary of entity type counts
+        """
+        print(f"\nCollecting {dataset_name} entity statistics...")
+        
+        entity_type_counts = {}
+        
+        for batch in data_loader:
+            # Get batch data
+            tag_ids = batch['tag_ids']
+            seq_lengths = batch['seq_lengths']
+            
+            batch_size = tag_ids.size(0)
+            
+            for i in range(batch_size):
+                seq_len = seq_lengths[i].item()
+                
+                # Extract entities
+                tags = [self.id_to_tag[tag.item()] for tag in tag_ids[i, :seq_len]]
+                entities = self._extract_entities(tags)
+                
+                # Count entity types
+                for entity in entities:
+                    entity_type = entity[0]
+                    entity_type_counts[entity_type] = entity_type_counts.get(entity_type, 0) + 1
+        
+        return entity_type_counts 

@@ -23,7 +23,7 @@ if [ "$OPTION" = "compare" ]; then
     
     # Run Base BiLSTM model (no CRF, no char CNN)
     echo "Running Base BiLSTM model..."
-    python main.py \
+    python ./main.py \
         --data_dir ../dataset \
         --output_dir ../output/comparison/base_bilstm \
         --language eng \
@@ -34,13 +34,13 @@ if [ "$OPTION" = "compare" ]; then
         --dropout 0.5 \
         --lr 0.001 \
         --batch_size 32 \
-        --epochs 100 \
+        --epochs 30 \
         --use_lr_scheduler \
         --scheduler_patience 3 \
         --scheduler_factor 0.5 \
         --grad_clip 5.0 \
         --weight_decay 1e-4 \
-        --early_stopping 20 \
+        --early_stopping 10 \
         --cuda \
         --seed 42 \
         --model_type bilstm \
@@ -48,7 +48,7 @@ if [ "$OPTION" = "compare" ]; then
     
     # Run BiLSTM-CRF model (no char CNN)
     echo "Running BiLSTM-CRF model..."
-    python main.py \
+    python ./main.py \
         --data_dir ../dataset \
         --output_dir ../output/comparison/bilstm_crf \
         --language eng \
@@ -59,13 +59,13 @@ if [ "$OPTION" = "compare" ]; then
         --dropout 0.5 \
         --lr 0.001 \
         --batch_size 32 \
-        --epochs 100 \
+        --epochs 30 \
         --use_lr_scheduler \
         --scheduler_patience 3 \
         --scheduler_factor 0.5 \
         --grad_clip 5.0 \
         --weight_decay 1e-4 \
-        --early_stopping 20 \
+        --early_stopping 10 \
         --cuda \
         --seed 42 \
         --model_type bilstm_crf \
@@ -73,7 +73,7 @@ if [ "$OPTION" = "compare" ]; then
     
     # Run BiLSTM-CRF with Char CNN
     echo "Running BiLSTM-CRF with Char CNN model..."
-    python main.py \
+    python ./main.py \
         --data_dir ../dataset \
         --output_dir ../output/comparison/bilstm_crf_char \
         --language eng \
@@ -88,50 +88,21 @@ if [ "$OPTION" = "compare" ]; then
         --char_channel_size 50 \
         --lr 0.001 \
         --batch_size 32 \
-        --epochs 100 \
+        --epochs 30 \
         --use_lr_scheduler \
         --scheduler_patience 3 \
         --scheduler_factor 0.5 \
         --grad_clip 5.0 \
         --weight_decay 1e-4 \
-        --early_stopping 20 \
+        --early_stopping 10 \
         --cuda \
         --seed 42 \
         --model_type bilstm_crf_char \
         --comparison_mode
     
-    # Run BiLSTM-CRF with Char CNN and Optimized CRF
-    echo "Running BiLSTM-CRF with Char CNN and Optimized CRF model..."
-    python main.py \
-        --data_dir ../dataset \
-        --output_dir ../output/comparison/bilstm_crf_char_opt \
-        --language eng \
-        --max_seq_len 128 \
-        --max_word_len 20 \
-        --embedding_dim 100 \
-        --hidden_dim 300 \
-        --num_layers 2 \
-        --dropout 0.5 \
-        --use_char_cnn \
-        --char_embedding_dim 30 \
-        --char_channel_size 50 \
-        --lr 0.001 \
-        --batch_size 32 \
-        --epochs 100 \
-        --use_lr_scheduler \
-        --scheduler_patience 3 \
-        --scheduler_factor 0.5 \
-        --grad_clip 5.0 \
-        --weight_decay 1e-4 \
-        --early_stopping 20 \
-        --cuda \
-        --seed 42 \
-        --model_type bilstm_crf_char_opt \
-        --comparison_mode
-    
     # Generate comparison visualizations
     echo "Generating comparison visualizations..."
-    python main.py \
+    python ./main.py \
         --comparison_visualization \
         --output_dir ../output
     
@@ -143,7 +114,7 @@ mkdir -p ../output
 
 echo "Training model for language: $OPTION"
 
-python main.py \
+python ./main.py \
     --data_dir ../dataset \
     --output_dir ../output \
     --language $OPTION \
@@ -154,16 +125,16 @@ python main.py \
     --num_layers 2 \
     --dropout 0.5 \
     --use_char_cnn \
-    --char_embedding_dim 30 \
-    --char_channel_size 50 \
+    --char_embedding_dim 10 \
+    --char_channel_size 25 \
     --lr 0.001 \
     --batch_size 32 \
-    --epochs 100 \
+    --epochs 30 \
     --use_lr_scheduler \
     --scheduler_patience 3 \
     --scheduler_factor 0.5 \
     --grad_clip 5.0 \
     --weight_decay 1e-4 \
-    --early_stopping 30 \
+    --early_stopping 10 \
     --cuda \
-    --seed 42 
+    --seed 42 \

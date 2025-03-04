@@ -24,6 +24,10 @@ def create_model(args, data_processor):
     vocab_size = len(data_processor.word2idx)
     num_tags = len(data_processor.tag2idx)
     
+    # Get START and STOP indices from tag2idx if they exist
+    start_idx = data_processor.tag2idx.get("<START>")
+    stop_idx = data_processor.tag2idx.get("<STOP>")
+    
     if args.model_type == 'bilstm':
         # Basic BiLSTM without CRF and character features
         model = BiLSTMCRF(
@@ -34,7 +38,9 @@ def create_model(args, data_processor):
             num_layers=args.num_layers,
             dropout=args.dropout,
             use_char_cnn=False,
-            use_crf=False
+            use_crf=False,
+            start_idx=start_idx,
+            stop_idx=stop_idx
         )
     elif args.model_type == 'bilstm_crf':
         # BiLSTM with CRF but without character features
@@ -47,9 +53,10 @@ def create_model(args, data_processor):
             dropout=args.dropout,
             use_char_cnn=False,
             use_crf=True,
-            optimize_crf=False
+            start_idx=start_idx,
+            stop_idx=stop_idx
         )
-    elif args.model_type == 'bilstm_crf_char':
+    else:  # bilstm_crf_char (default)
         # BiLSTM with CRF and character features
         model = BiLSTMCRF(
             vocab_size=vocab_size,
@@ -63,23 +70,8 @@ def create_model(args, data_processor):
             char_embedding_dim=args.char_embedding_dim,
             char_channel_size=args.char_channel_size,
             use_crf=True,
-            optimize_crf=False
-        )
-    else:  # bilstm_crf_char_opt
-        # BiLSTM with optimized CRF and character features
-        model = BiLSTMCRF(
-            vocab_size=vocab_size,
-            embedding_dim=args.embedding_dim,
-            hidden_dim=args.hidden_dim,
-            num_tags=num_tags,
-            num_layers=args.num_layers,
-            dropout=args.dropout,
-            use_char_cnn=True,
-            num_chars=len(data_processor.char2idx),
-            char_embedding_dim=args.char_embedding_dim,
-            char_channel_size=args.char_channel_size,
-            use_crf=True,
-            optimize_crf=True
+            start_idx=start_idx,
+            stop_idx=stop_idx
         )
     
     return model
@@ -100,15 +92,13 @@ def generate_comparison_visualizations(output_dir):
     model_dirs = [
         'base_bilstm',
         'bilstm_crf',
-        'bilstm_crf_char',
-        'bilstm_crf_char_opt'
+        'bilstm_crf_char'
     ]
     
     model_names = [
         'BiLSTM (Base)',
         'BiLSTM-CRF',
-        'BiLSTM-CRF + Char CNN',
-        'BiLSTM-CRF + Char CNN + Opt CRF'
+        'BiLSTM-CRF + Char CNN'
     ]
     
     # Collect metrics from all models
@@ -195,46 +185,39 @@ def generate_comparison_visualizations(output_dir):
 
 
 def main():
-    # Get arguments
+    """
+    Main function
+    """
+    # Parse arguments
     args = get_args()
-    
-    # Handle comparison visualization mode separately
-    if args.comparison_visualization:
-        print("\nGenerating comparison visualizations...")
-        generate_comparison_visualizations(args.output_dir)
-        return
     
     # Set random seed
     set_seed(args.seed)
     print(f"Random seed set to {args.seed}")
-
-    # Print header
-    print("\n" + "="*60)
-    print(f"BiLSTM-CRF Model for Named Entity Recognition")
-    print("="*60 + "\n")
+    
+    # Check if comparison visualization mode
+    if args.comparison_visualization:
+        generate_comparison_visualizations(args.output_dir)
+        return
     
     # Print arguments
     print_args(args)
     
     # Load data
-    print("\nLoading data...")
+    print("Loading data...")
     start_time = time.time()
     data_processor = DataProcessor(
-        args.data_dir, 
-        args.language, 
+        args.data_dir,
+        args.language,
         args.max_seq_len,
         args.max_word_len
     )
     data_processor.load_data()
-    
-    # Create data loaders
-    train_loader, dev_loader, test_loader = data_processor.create_dataloaders(args.batch_size)
     end_time = time.time()
-    mins, secs = epoch_time(start_time, end_time)
-    print(f"Data loaded in: {mins}m {secs}s")
+    print(f"Data loaded in: {int((end_time - start_time) // 60)}m {int((end_time - start_time) % 60)}s")
     
     # Print dataset information
-    print(f"\nDataset Information:")
+    print("\nDataset Information:")
     print(f"  Vocabulary size: {len(data_processor.word2idx)}")
     print(f"  Character vocabulary size: {len(data_processor.char2idx)}")
     print(f"  Tag set size: {len(data_processor.tag2idx)}")
@@ -242,29 +225,33 @@ def main():
     print(f"  Validation samples: {len(data_processor.valid_dataset)}")
     print(f"  Test samples: {len(data_processor.test_dataset)}")
     
-    # Initialize model based on the model type
+    # Create data loaders
+    train_loader, dev_loader, test_loader = data_processor.create_dataloaders(args.batch_size)
+    
+    # Create model
     print(f"\nInitializing {args.model_type} model...")
     model = create_model(args, data_processor)
-    
-    # Count parameters
-    num_params = count_parameters(model)
-    print(f"Model parameters: {num_params:,}")
+    print(f"Model parameters: {count_parameters(model)}")
     
     # Create trainer
     trainer = Trainer(model, data_processor.tag2idx, args)
     
+    # Analyze entity type distribution in datasets
+    print("\nAnalyzing entity type distribution in datasets...")
+    trainer.analyze_dataset_differences(train_loader, dev_loader)
+    
     # Train model
-    print("\n" + "="*60)
+    print("\n============================================================")
     print("Starting Training")
-    print("="*60)
-    
-    start_time = time.time()
+    print("============================================================")
     best_model_path = trainer.train(train_loader, dev_loader, test_loader)
-    end_time = time.time()
     
-    mins, secs = epoch_time(start_time, end_time)
-    print(f"\nTotal training time: {mins}m {secs}s")
-    print(f"Best model saved to: {best_model_path}")
+    # Generate comparison visualizations if in comparison mode
+    if args.comparison_mode:
+        print("Generating comparison visualizations...")
+        generate_comparison_visualizations(args.output_dir)
+    
+    print("Training completed successfully!")
 
 
 if __name__ == "__main__":

@@ -281,38 +281,57 @@ class DataProcessor:
         Returns:
             tag2idx: Tag to index mapping
         """
-        # Build tag set
+        # Build tag set to check which tags are present in the dataset
         tag_set = set()
         for tags in tags_list:
             tag_set.update(tags)
         
-        # Build mapping starting with special tags
+        # Define fixed tag mapping for both English and German CoNLL datasets
+        # This ensures consistent order for CRF transitions
         tag2idx = {
-            "O": 0,     # Outside (non-entity) tag
-            "<UNK>": 1  # Unknown tag for handling unseen labels
+            # Common tags
+            "O": 0,       # Outside (non-entity) tag
+            "<UNK>": 1,   # Unknown tag for handling unseen labels
+            
+            # English CoNLL tags
+            "B-PER": 2,   # Beginning of person
+            "I-PER": 3,   # Inside of person
+            "B-LOC": 4,   # Beginning of location
+            "I-LOC": 5,   # Inside of location
+            "B-ORG": 6,   # Beginning of organization
+            "I-ORG": 7,   # Inside of organization
+            "B-MISC": 8,  # Beginning of miscellaneous
+            "I-MISC": 9,  # Inside of miscellaneous
+            
+            # German CoNLL tags
+            "B-NC": 10,   # Beginning of noun chunk
+            "I-NC": 11,   # Inside of noun chunk
+            "B-PC": 12,   # Beginning of prepositional chunk
+            "I-PC": 13,   # Inside of prepositional chunk
+            "B-VC": 14,   # Beginning of verbal chunk
+            "I-VC": 15,   # Inside of verbal chunk
+            "-X-": 16,    # Special tag in German dataset
+            
+            # Special tags for CRF
+            "<START>": 17, # Start of sequence
+            "<STOP>": 18   # End of sequence
         }
         
-        # Extract tag types (without B- or I- prefix)
-        entity_types = set()
+        # Verify all tags in the dataset are in our mapping
+        unknown_tags = []
         for tag in tag_set:
-            if tag.startswith("B-") or tag.startswith("I-"):
-                entity_types.add(tag[2:])
+            if tag not in tag2idx:
+                unknown_tags.append(tag)
+                
+        if unknown_tags:
+            print(f"Warning: Found {len(unknown_tags)} unknown tags in the dataset that will be mapped to <UNK>:")
+            for tag in sorted(unknown_tags):
+                print(f"  - {tag}")
         
-        # Add BIO tags in consistent order (B-X, I-X, B-Y, I-Y, ...)
-        idx = 2
-        for entity_type in sorted(entity_types):
-            b_tag = f"B-{entity_type}"
-            i_tag = f"I-{entity_type}"
-            
-            # Add B-X tag
-            if b_tag in tag_set:
-                tag2idx[b_tag] = idx
-                idx += 1
-            
-            # Add I-X tag
-            if i_tag in tag_set:
-                tag2idx[i_tag] = idx
-                idx += 1
+        # Print the tags found in this dataset
+        print(f"Tags found in dataset ({len(tag_set)}):")
+        for tag in sorted(tag_set):
+            print(f"  - {tag}: {tag2idx.get(tag, tag2idx['<UNK>'])}")
         
         return tag2idx
     
