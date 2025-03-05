@@ -1,0 +1,4 @@
+language,timestamp,total_epochs,best_model_epoch,training_time_seconds,training_time_formatted,final_train_loss,final_train_f1,best_val_precision,best_val_recall,best_val_f1,test_precision,test_recall,test_f1,model_params,hidden_dim,num_layers,dropout,model_name
+eng,2025-03-04 22:21:22,30,25,829.9,0h 13m 49s,0.0175,97.03%,87.54%,78.98%,83.04%,80.07%,69.55%,74.44%,3213119,300,2,0.5,BiLSTM (Base)
+eng,2025-03-04 22:48:35,30,30,1617.59,0h 26m 57s,-345.5396,90.50%,87.30%,80.39%,83.70%,81.42%,72.88%,76.91%,3213480,300,2,0.5,BiLSTM-CRF
+eng,2025-03-04 23:12:24,30,30,1415.37,0h 23m 35s,-339.3103,96.74%,87.70%,88.34%,88.02%,82.19%,83.69%,82.94%,3280610,300,2,0.5,BiLSTM-CRF + Char CNN

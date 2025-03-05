@@ -1,0 +1,2 @@
+language,timestamp,total_epochs,best_model_epoch,training_time_seconds,training_time_formatted,final_train_loss,final_train_f1,best_val_precision,best_val_recall,best_val_f1,test_precision,test_recall,test_f1,model_params,hidden_dim,num_layers,dropout
+eng,2025-03-04 22:36:54,30,30,1669.35,0h 27m 49s,-339.3834,96.55%,87.42%,87.80%,87.61%,81.56%,82.63%,82.09%,3245115,300,2,0.5
