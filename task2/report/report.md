@@ -274,8 +274,6 @@ task2/
 pip install -r src/requirements.txt
 ```
 
-此外，本实验还需要下载GloVe预训练词向量，可以从[Stanford NLP网站](https://nlp.stanford.edu/projects/glove/)下载，并将相应文件放入glove目录。
-
 ### 3.3 参数说明
 
 主程序 `main.py` 支持以下命令行参数：
