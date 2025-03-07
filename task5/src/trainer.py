@@ -12,8 +12,9 @@ import math
 import torch.nn.functional as F
 import copy
 from collections import defaultdict
+import random
 
-# 导入混合精度训练支持
+# Import mixed precision training support
 from torch.cuda.amp import autocast, GradScaler
 
 class Trainer:
@@ -34,6 +35,17 @@ class Trainer:
         self.vocab_size = vocab_size
         self.idx_to_char = idx_to_char
         self.args = args
+        
+        # Special token index - according to the definition in data_processor.py
+        self.pad_idx = 0  # Index of <PAD> is 0
+        self.unk_idx = 1  # Index of <UNK> is 1
+        self.bos_idx = 2  # Index of <BOS> is 2
+        self.eos_idx = 3  # Index of <EOS> is 3
+        self.line_idx = 4  # Index of <LINE> is 4
+        
+        # Gradient centralization setting
+        self.grad_centralization = False  # Default is off
+        
         self.device = torch.device('cuda' if args.cuda and torch.cuda.is_available() else 'cpu')
         self.output_dir = args.output_dir
         self.patience = args.patience if hasattr(args, 'patience') else 10
@@ -46,134 +58,83 @@ class Trainer:
         self.model = self.model.to(self.device)
         
         # Initialize exponential moving average model if requested
-        self.ema_model = None
-        if hasattr(args, 'use_ema') and args.use_ema:
-            self.ema_model = copy.deepcopy(model)
-            self.ema_decay = 0.9999 if hasattr(args, 'ema_decay') else 0.9999
+        self.use_ema = getattr(args, 'use_ema', False)
+        self.ema_decay = 0.9999 if hasattr(args, 'ema_decay') else 0.9999
+        if self.use_ema:
             print(f"Using EMA with decay {self.ema_decay}")
+            self.ema_model = copy.deepcopy(self.model)
         
-        # Set up optimizer with weight decay normalization
-        if args.optimizer.lower() == 'adam':
-            self.optimizer = optim.Adam(
-                self._get_optimizer_grouped_parameters(args.weight_decay),
-                lr=args.lr,
-                betas=(0.9, 0.999),
-                eps=1e-8
-            )
-            print(f"Using Adam optimizer with weight decay: {args.weight_decay}")
-        elif args.optimizer.lower() == 'adamw':
-            self.optimizer = optim.AdamW(
-                self._get_optimizer_grouped_parameters(args.weight_decay),
-                lr=args.lr,
-                betas=(0.9, 0.95),
-                eps=1e-8
-            )
-            print(f"Using AdamW optimizer with weight decay: {args.weight_decay}")
-        elif args.optimizer.lower() == 'radam':
-            try:
-                from torch.optim import RAdam
-                self.optimizer = RAdam(
-                    self._get_optimizer_grouped_parameters(args.weight_decay),
-                    lr=args.lr,
-                    betas=(0.9, 0.999),
-                    eps=1e-8
-                )
-                print(f"Using RAdam optimizer with weight decay: {args.weight_decay}")
-            except ImportError:
-                print("RAdam not available, falling back to AdamW")
-                self.optimizer = optim.AdamW(
-                    self._get_optimizer_grouped_parameters(args.weight_decay),
-                    lr=args.lr
-                )
+        # Training setting
+        self.epochs = args.epochs
+        self.criterion = nn.CrossEntropyLoss(ignore_index=self.pad_idx, label_smoothing=getattr(args, 'label_smoothing', 0.0))
+        
+        # Optimizer setting
+        optimizer_type = getattr(args, 'optimizer', 'adam').lower()
+        lr = getattr(args, 'lr', 0.001)
+        weight_decay = getattr(args, 'weight_decay', 0.0)
+        
+        # Create optimizer
+        if optimizer_type == 'adam':
+            self.optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+        elif optimizer_type == 'adamw':
+            self.optimizer = optim.AdamW(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+            print(f"Using AdamW optimizer with weight decay: {weight_decay}")
+        elif optimizer_type == 'sgd':
+            self.optimizer = optim.SGD(self.model.parameters(), lr=lr, momentum=0.9, weight_decay=weight_decay)
         else:
-            self.optimizer = optim.SGD(
-                self._get_optimizer_grouped_parameters(args.weight_decay),
-                lr=args.lr,
-                momentum=0.9,
-                nesterov=True
-            )
-            print(f"Using SGD optimizer with momentum and weight decay: {args.weight_decay}")
+            self.optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
         
-        # Set up advanced learning rate scheduler
-        warmup_epochs = args.warmup_epochs if hasattr(args, 'warmup_epochs') else 0
-        
-        if args.scheduler == 'plateau':
-            self.scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-                self.optimizer, mode='min', factor=0.5, patience=2, verbose=True, min_lr=1e-6)
-            self.scheduler_type = 'plateau'
-        elif args.scheduler == 'cosine':
+        # Learning rate scheduler
+        scheduler_type = getattr(args, 'scheduler', 'none').lower()
+        if scheduler_type == 'plateau':
+            self.scheduler = ReduceLROnPlateau(self.optimizer, mode='min', factor=0.5, patience=5, verbose=True)
+        elif scheduler_type == 'cosine':
+            warmup_epochs = getattr(args, 'warmup_epochs', 0)
             if warmup_epochs > 0:
-                warmup_scheduler = optim.lr_scheduler.LinearLR(
-                    self.optimizer, 
-                    start_factor=0.1, 
-                    end_factor=1.0, 
-                    total_iters=warmup_epochs
-                )
-                cosine_scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                    self.optimizer, 
-                    T_max=args.epochs - warmup_epochs, 
-                    eta_min=1e-6
-                )
-                self.scheduler = optim.lr_scheduler.SequentialLR(
-                    self.optimizer,
-                    schedulers=[warmup_scheduler, cosine_scheduler],
-                    milestones=[warmup_epochs]
-                )
-            else:
-                self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                    self.optimizer, T_max=args.epochs, eta_min=1e-6)
-            self.scheduler_type = 'cosine'
-        elif args.scheduler == 'cosine_restarts':
-            self.scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
-                self.optimizer, T_0=10, T_mult=2, eta_min=1e-6)
-            self.scheduler_type = 'cosine_restarts'
-        elif args.scheduler == 'onecycle':
-            steps_per_epoch = 100  # This will be updated in train()
-            self.scheduler = optim.lr_scheduler.OneCycleLR(
-                self.optimizer, 
-                max_lr=args.lr,
-                epochs=args.epochs,
-                steps_per_epoch=steps_per_epoch,
-                pct_start=0.3,
-                anneal_strategy='cos',
-                div_factor=25.0,
-                final_div_factor=1000.0
-            )
-            self.scheduler_type = 'onecycle'
+                print(f"Using cosine scheduler with {warmup_epochs} warmup epochs")
+            self.scheduler = CosineAnnealingLR(self.optimizer, T_max=args.epochs, eta_min=1e-6)
         else:
-            self.scheduler = optim.lr_scheduler.StepLR(
-                self.optimizer, step_size=5, gamma=0.5)
-            self.scheduler_type = 'step'
+            self.scheduler = None
+            
+        if scheduler_type == 'cosine':
+            print("Using cosine scheduler")
         
-        # Set up loss function with label smoothing if enabled
-        self.label_smoothing = args.label_smoothing if hasattr(args, 'label_smoothing') else 0.0
-        if self.label_smoothing > 0:
+        self.patience = getattr(args, 'patience', 5)  # Default patience value is 5
+        self.grad_clip = getattr(args, 'grad_clip', 0.0)  # Default is not to clip gradients
+        if self.grad_clip > 0:
+            print(f"Using gradient clipping with value: {self.grad_clip}")
+        self.log_interval = getattr(args, 'log_interval', 10)  # Default is to output log every 10 batches
+        self.grad_accum_steps = 1  # Default gradient accumulation steps is 1
+        
+        # Set loss function
+        self.label_smoothing = 0.0
+        if hasattr(args, 'label_smoothing') and args.label_smoothing > 0:
+            self.label_smoothing = args.label_smoothing
             print(f"Using label smoothing with factor: {self.label_smoothing}")
             self.criterion = nn.CrossEntropyLoss(ignore_index=0, label_smoothing=self.label_smoothing)
         else:
             self.criterion = nn.CrossEntropyLoss(ignore_index=0)
         
-        # Initialize lists for tracking metrics
+        # Set special token weight
+        self.special_token_weight = 2.0
+        
+        # Enable mixed precision training
+        self.use_amp = getattr(args, 'use_amp', False)
+        self.scaler = None
+        if self.use_amp and torch.cuda.is_available():
+            self.scaler = GradScaler()
+            print("Using mixed precision training")
+        
+        # Create placeholders for tracking training statistics
         self.train_losses = []
         self.val_losses = []
         self.train_ppls = []
         self.val_ppls = []
         self.train_accs = []
         self.val_accs = []
-        
-        # Initialize training history
         self.best_val_loss = float('inf')
-        self.best_val_ppl = float('inf')
-        self.best_epoch = 0
-        self.patience_counter = 0
         
-        # Mixed precision training setup
-        self.use_amp = hasattr(args, 'use_amp') and args.use_amp and torch.cuda.is_available()
-        if self.use_amp:
-            self.scaler = torch.amp.GradScaler()
-            print("Using mixed precision training")
-        
-        # Print model information
+        # Print training setup
         print(f"Training on {self.device}")
         
         # Set random seed for reproducibility
@@ -197,235 +158,241 @@ class Trainer:
         # Create char_to_idx (reverse mapping from idx_to_char)
         self.char_to_idx = {char: idx for idx, char in idx_to_char.items()}
         
-        # Gradient accumulation steps
-        self.grad_accum_steps = args.grad_accum_steps if hasattr(args, 'grad_accum_steps') else 1
-        
         # Focal loss gamma parameter (if using focal loss)
         self.focal_gamma = args.focal_gamma if hasattr(args, 'focal_gamma') else 0.0
     
     def train(self, train_loader, val_loader):
         """
-        Train the model with comprehensive optimization and monitoring strategies
+        Train the model, including validation, early stopping mechanism, etc.
         
         Args:
-            train_loader: Training data loader
-            val_loader: Validation data loader
+            train_loader: Training set DataLoader
+            val_loader: Validation set DataLoader
             
         Returns:
-            Path to the best model checkpoint
+            str: Path to the best model
         """
-        print("\n============================================================")
-        print(f"Running {self.args.model_type} Language Model")
-        print("============================================================")
         
-        # Initialize variables for tracking training progress
-        train_losses = []
-        val_losses = []
-        train_ppls = []
-        val_ppls = []
-        train_accs = []
-        val_accs = []
-        val_ppl_history = [float('inf')]  # Initialize with infinity
-        learning_rates = []
-        
+        # Track best validation set performance
         best_val_loss = float('inf')
         best_val_ppl = float('inf')
-        best_epoch = 0
-        no_improvement = 0
+        patience_counter = 0
+        
+        # Save training history for plotting
+        self.train_losses = []
+        self.val_losses = []
+        self.train_ppls = []
+        self.val_ppls = []
+        self.train_accs = []
+        self.val_accs = []
+        validation_ppls = []  # For calculating average growth rate
+        
+        # Create directory to save models
+        if not os.path.exists(self.output_dir):
+            os.makedirs(self.output_dir)
+        
+        # Path to save the best model
         best_model_path = os.path.join(self.output_dir, f"{self.args.model_type}_best_model.pt")
         
-        # Initialize gradient accumulation steps from args or default
-        grad_accum_steps = self.grad_accum_steps
+        # Add overfitting detection variable
+        consecutive_ppl_increases = 0
+        
+        # Add dropout dynamic strategy
+        original_dropout = None
+        
+        # Adaptive gradient accumulation
+        adaptive_grad_accum = True  # Whether to use adaptive gradient accumulation
+        
+        # Get warmup_epochs parameter
+        warmup_epochs = getattr(self.args, 'warmup_epochs', 5)
+        
+        # Set flag to adjust learning rate every 10 epochs
+        lr_adjust_epochs = set(range(10, self.args.epochs, 10))
         
         # Training loop
         for epoch in range(1, self.args.epochs + 1):
-            # Update onecycle scheduler steps per epoch if needed
-            if self.scheduler_type == 'onecycle' and hasattr(self.scheduler, 'total_steps'):
-                self.scheduler.total_steps = len(train_loader) * self.args.epochs
+            # Dynamic learning rate adjustment
+            if epoch in lr_adjust_epochs and patience_counter >= 2:
+                # If two consecutive rounds have no improvement, reduce learning rate
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] *= 0.8
+                print(f"Epoch {epoch}: Two consecutive rounds have no improvement, reducing learning rate to {self.optimizer.param_groups[0]['lr']:.6f}")
             
-            # Apply dynamic loss scaling based on epoch progress
-            loss_scale = min(1.2, 0.8 + epoch / self.args.epochs * 0.4)  # Scale from 0.8 to 1.2
+            # Periodic dropout adjustment - Increase dropout every 15 epochs
+            if epoch % 15 == 0 and epoch > 1:
+                if not hasattr(self.model, 'increase_dropout'):
+                    print("Model does not implement increase_dropout method")
+                else:
+                    print(f"Epoch {epoch}: Increase dropout to {self.args.dropout + 0.05} to reduce overfitting")
+                    self.model.increase_dropout(0.05)
             
-            # Set dynamic label smoothing if enabled
-            if hasattr(self.args, 'dynamic_label_smoothing') and self.args.dynamic_label_smoothing:
-                # Start with higher label smoothing, then gradually reduce
-                if hasattr(self.criterion, 'label_smoothing') and hasattr(self.criterion, 'set_label_smoothing'):
-                    dynamic_smoothing = self.label_smoothing * (1.0 - 0.5 * epoch / self.args.epochs)
-                    self.criterion.set_label_smoothing(dynamic_smoothing)
-                    print(f"Using dynamic label smoothing: {dynamic_smoothing:.3f}")
+            # As training progresses, slightly increase dropout to reduce overfitting
+            if original_dropout is not None and epoch > warmup_epochs + 5:
+                # Increase 0.05 every 10 epochs, up to 0.8
+                dropout_increase = min(0.2, 0.05 * ((epoch - warmup_epochs - 5) // 10))
+                new_dropout = min(0.8, original_dropout + dropout_increase)
+                
+                # Apply to all dropout layers in the model
+                for name, module in self.model.named_modules():
+                    if isinstance(module, nn.Dropout):
+                        module.p = new_dropout
+                        
+                print(f"Epoch {epoch}: Increase dropout to {new_dropout:.2f} to reduce overfitting")
+            
+            # Adaptive gradient accumulation - Increase gradient accumulation steps when PPL keeps growing
+            if adaptive_grad_accum and consecutive_ppl_increases >= 2:
+                old_grad_accum = self.grad_accum_steps
+                self.grad_accum_steps = min(8, self.grad_accum_steps + 1)  # Accumulate up to 8 steps
+                if old_grad_accum != self.grad_accum_steps:
+                    print(f"Detected overfitting trend, increasing gradient accumulation steps to {self.grad_accum_steps}")
+            
+            # Record training start time
+            start_time = time.time()
+            
+            # As training progresses, increase gradient clipping and weight decay to reduce overfitting
+            if epoch > 10:
+                # Adjust gradient clipping and weight decay based on relative growth rate of validation perplexity
+                if len(validation_ppls) >= 3:
+                    # Calculate relative growth rate
+                    recent_ppls = validation_ppls[-3:]
+                    relative_increase = (recent_ppls[-1] - recent_ppls[0]) / recent_ppls[0]
+                    
+                    # If perplexity starts to increase, enhance regularization
+                    if relative_increase > 0.01:  # Trigger with only 1% growth
+                        # Increase weight decay
+                        for param_group in self.optimizer.param_groups:
+                            if 'weight_decay' in param_group:
+                                param_group['weight_decay'] = min(0.01, param_group['weight_decay'] * 1.2)
+                                self.grad_clip = max(1.0, self.grad_clip * 0.9)  # Reduce gradient clipping, suppress large gradients
+                                print(f"Detected perplexity growth ({relative_increase:.2%}), increasing weight decay to {param_group['weight_decay']:.5f}, adjusting gradient clipping to {self.grad_clip:.2f}")
+                                break
             
             # Train for one epoch
-            train_loss, train_ppl, train_accuracy = self._train_epoch(
+            train_loss, train_ppl, train_acc = self._train_epoch(
                 train_loader, 
                 epoch, 
-                grad_accum_steps=grad_accum_steps
+                grad_accum_steps=self.grad_accum_steps
             )
             
-            # Apply EMA if enabled
-            if self.ema_model is not None:
-                # Temporarily swap models for evaluation
-                orig_model = self.model
-                self.model = self.ema_model
-                
-                # Evaluate on validation set with EMA model
-                val_loss, val_ppl, val_accuracy = self.evaluate(val_loader)
-                
-                # Swap back
-                self.model = orig_model
+            # Update statistics
+            self.train_losses.append(train_loss)
+            self.train_ppls.append(train_ppl)
+            self.train_accs.append(train_acc)
+            
+            # Evaluate on validation set
+            val_loss, val_ppl, val_acc = self.evaluate(val_loader)
+            self.val_losses.append(val_loss)
+            self.val_ppls.append(val_ppl)
+            self.val_accs.append(val_acc)
+            
+            # Record validation perplexity history
+            validation_ppls.append(val_ppl)
+            
+            # Detect continuous PPL increase situation
+            if len(validation_ppls) >= 2 and validation_ppls[-1] > validation_ppls[-2]:
+                consecutive_ppl_increases += 1
             else:
-                # Evaluate on validation set
-                val_loss, val_ppl, val_accuracy = self.evaluate(val_loader)
+                consecutive_ppl_increases = 0
+                # If PPL has decreased, try to reduce gradient accumulation steps back to original state
+                if adaptive_grad_accum and self.grad_accum_steps > 1:
+                    self.grad_accum_steps = max(1, self.grad_accum_steps - 1)
+                    print(f"Validation perplexity decreased, reducing gradient accumulation steps to {self.grad_accum_steps}")
             
-            # Store metrics for plotting
-            train_losses.append(train_loss)
-            val_losses.append(val_loss)
-            train_ppls.append(train_ppl)
-            val_ppls.append(val_ppl)
-            train_accs.append(train_accuracy)
-            val_accs.append(val_accuracy)
-            val_ppl_history.append(val_ppl)
-            
-            # Store current learning rate
-            current_lr = self.optimizer.param_groups[0]['lr']
-            learning_rates.append(current_lr)
+            # If three consecutive PPL increases, reduce learning rate
+            if consecutive_ppl_increases >= 3:
+                for param_group in self.optimizer.param_groups:
+                    param_group['lr'] *= 0.5
+                    # Also increase weight decay to reduce overfitting
+                    param_group['weight_decay'] = min(0.01, param_group['weight_decay'] * 1.5)  # Increase L2 regularization strength
+                
+                print(f"Validation perplexity three consecutive increases, reducing learning rate to {self.optimizer.param_groups[0]['lr']:.6f}")
+                print(f"Also increasing weight decay to {self.optimizer.param_groups[0]['weight_decay']:.6f}")
+                consecutive_ppl_increases = 0
             
             # Update learning rate scheduler
-            if self.scheduler_type == 'plateau':
-                self.scheduler.step(val_loss)
-            elif self.scheduler_type not in ['onecycle']:  # onecycle is updated per iteration
-                self.scheduler.step()
-            
-            # Track the train/val loss ratio for overfitting detection
-            train_val_ratio = train_loss / val_loss if val_loss > 0 else 1.0
-            
-            # Check for overfitting signals
-            overfitting_detected = False
-            severe_overfitting = False
-            
-            # Signal 1: Train-val loss ratio is too small (train doing much better than val)
-            if epoch > 5 and train_val_ratio < 0.2:
-                overfitting_detected = True
-                print("Overfitting signal: Train loss much lower than validation loss")
-                
-                if train_val_ratio < 0.1:
-                    severe_overfitting = True
-                    print("WARNING: Severe overfitting detected!")
-            
-            # Signal 2: Validation performance is getting worse consistently
-            if epoch > 3:
-                recent_val_ppls = val_ppl_history[-4:]
-                if all(recent_val_ppls[i] < recent_val_ppls[i+1] for i in range(len(recent_val_ppls)-1)):
-                    overfitting_detected = True
-                    print("Overfitting signal: Validation perplexity increasing consistently")
-            
-            # Signal 3: Train accuracy rising while val accuracy falling
-            if epoch > 3 and len(train_accs) > 3 and len(val_accs) > 3:
-                if (train_accs[-1] > train_accs[-2] > train_accs[-3]) and (val_accs[-1] < val_accs[-2] < val_accs[-3]):
-                    overfitting_detected = True
-                    print("Overfitting signal: Train accuracy increasing while validation accuracy decreasing")
-            
-            # Apply additional regularization if overfitting detected
-            if overfitting_detected:
-                # 1. Increase gradient accumulation steps (more stable gradients)
-                if grad_accum_steps < 8:  # Cap at reasonable value
-                    grad_accum_steps += 1
-                    print(f"Increased gradient accumulation steps to {grad_accum_steps}")
-                
-                # 2. Increase weight decay temporarily
-                for param_group in self.optimizer.param_groups:
-                    if 'weight_decay' in param_group:
-                        param_group['weight_decay'] = min(0.1, param_group['weight_decay'] * 1.2)
-                        print(f"Increased weight decay to {param_group['weight_decay']:.6f}")
-                
-                # 3. Apply stronger dropout if available
-                if hasattr(self.model, 'increase_dropout'):
-                    increment = 0.1 if severe_overfitting else 0.05
-                    old_dropout = self.model.dropout.p if hasattr(self.model, 'dropout') else 0.0
-                    new_dropout = self.model.increase_dropout(increment)
-                    print(f"Increased dropout from {old_dropout:.2f} to {new_dropout:.2f}")
-                
-                # 4. Apply learning rate reduction
-                if severe_overfitting:
-                    for param_group in self.optimizer.param_groups:
-                        param_group['lr'] = param_group['lr'] * 0.7
-                    print(f"Reduced learning rate to {self.optimizer.param_groups[0]['lr']:.6f}")
-            
-            # Early stopping with model improvement tracking
-            if val_ppl < best_val_ppl:
-                best_val_ppl = val_ppl
-                best_val_loss = val_loss
-                best_epoch = epoch
-                no_improvement = 0
-                
-                # Save the best model (use EMA model if enabled)
-                if self.ema_model is not None:
-                    # Temporarily swap models for saving
-                    orig_model = self.model
-                    self.model = self.ema_model
-                    self._save_checkpoint(epoch, val_loss, val_ppl, best_model_path)
-                    self.model = orig_model
-                    print(f"Saved best EMA model to {best_model_path}")
+            if self.scheduler is not None:
+                if isinstance(self.scheduler, ReduceLROnPlateau):
+                    # Use perplexity instead of loss to adjust learning rate
+                    self.scheduler.step(val_ppl)
+                elif isinstance(self.scheduler, torch.optim.lr_scheduler.LambdaLR):
+                    self.scheduler.step()
                 else:
-                    self._save_checkpoint(epoch, val_loss, val_ppl, best_model_path)
-                    print(f"Saved best model to {best_model_path}")
-                
-                # Save checkpoint at each improvement if enabled
-                if hasattr(self.args, 'save_all_improvements') and self.args.save_all_improvements:
-                    improvement_path = os.path.join(self.output_dir, f"{self.args.model_type}_epoch{epoch}.pt")
-                    self._save_checkpoint(epoch, val_loss, val_ppl, improvement_path)
-            else:
-                no_improvement += 1
-                print(f"No improvement for {no_improvement} epochs")
+                    self.scheduler.step()
             
-            # Generate sample text periodically
+            # Calculate moving average perplexity (average of last 3 epochs) to smooth short-term fluctuations
+            if len(validation_ppls) >= 3:
+                smoothed_val_ppl = sum(validation_ppls[-3:]) / 3
+            else:
+                smoothed_val_ppl = val_ppl
+                
+            # Print smoothed perplexity information
+            if len(validation_ppls) >= 3:
+                print(f"Current perplexity: {val_ppl:.4f}, Smoothed perplexity: {smoothed_val_ppl:.4f}")
+            
+            # Use validation perplexity instead of loss to judge performance (using smoothed perplexity)
+            if val_ppl < best_val_ppl:
+                # Calculate improvement percentage - Prevent nan at initial time
+                if best_val_ppl == float('inf'):
+                    improvement = 100.0  # Initial situation, set as 100% improvement
+                else:
+                    improvement = (best_val_ppl - val_ppl) / best_val_ppl * 100
+                
+                print(f"Validation perplexity improved from {best_val_ppl:.4f} to {val_ppl:.4f} ({improvement:.2f}%)")
+                
+                # Save best model
+                best_val_ppl = val_ppl
+                best_val_loss = val_loss  # Also update best loss value
+                self._save_checkpoint(epoch, val_loss, val_ppl, best_model_path)
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                print(f"Already {patience_counter} rounds have no improvement. Best perplexity: {best_val_ppl:.4f}")
+                
+                # Implement more aggressive early stopping strategy
+                if patience_counter >= 5 and epoch > 10:
+                    # Calculate average growth rate of recent 5 epochs
+                    if len(validation_ppls) >= 5:
+                        recent_ppls = validation_ppls[-5:]
+                        avg_ppl_increase = (recent_ppls[-1] - recent_ppls[0]) / recent_ppls[0]
+                        
+                        # If average growth rate exceeds 10%, stop early (modified to stricter condition)
+                        if avg_ppl_increase > 0.10:
+                            print(f"Validation perplexity continuous increase ({avg_ppl_increase:.2%}), stopping early.")
+                            break
+            
+            # Every 5 epochs or last epoch generate Tang poem sample - Regardless of model improvement
             if epoch % 5 == 0 or epoch == self.args.epochs:
-                self._generate_sample(epoch)
+                print(f"\n===== Tang poem generation example after {epoch} training rounds =====")
+                # Use correct parameter form to call generation method
+                self._generate_sample(epoch=epoch, num_samples=1, max_length=None, poem_types=['5', '7'])
+                print(f"===== Generation ended =====\n")
             
             # Plot training curves
-            if epoch % 5 == 0 or epoch == self.args.epochs or no_improvement >= self.patience:
+            if epoch % 5 == 0 or epoch == self.args.epochs:
                 self._plot_training_curves()
             
-            # Check for early stopping with patience
-            patience = self.patience
-            if no_improvement >= patience:
-                # Only stop if we've trained for at least 1/3 of the epochs
-                min_epochs = max(10, self.args.epochs // 3)
-                if epoch >= min_epochs:
-                    print(f"Early stopping after {epoch} epochs")
-                    break
-                else:
-                    print(f"No improvement for {no_improvement} epochs, but continuing training (minimum {min_epochs} epochs)")
-                    
-                    # Reset counter but with a penalty to avoid getting stuck in a loop
-                    no_improvement = patience // 2
-            
-            # Print epoch divider for better logging
-            print("------------------------------------------------------------")
+            # Early stopping
+            if patience_counter >= self.patience:
+                print(f"Early stopping after {epoch} epochs without improvement.")
+                break
         
-        # Load the best model for final evaluation
-        if os.path.exists(best_model_path):
-            print(f"Loading best model from {best_model_path}")
-            self.load_checkpoint(best_model_path)
-            print(f"Best validation perplexity: {best_val_ppl:.2f} at epoch {best_epoch}")
-        else:
-            print("Warning: Best model file not found. Using current model state.")
+        # Restore original dropout value
+        if original_dropout is not None:
+            for name, module in self.model.named_modules():
+                if isinstance(module, nn.Dropout):
+                    module.p = original_dropout
         
-        # Provide training summary
-        if epoch > 1:
-            if best_epoch < epoch:
-                epochs_after_best = epoch - best_epoch
-                print(f"Model trained for {epochs_after_best} epochs after best validation performance.")
-                if epochs_after_best > 10:
-                    print("WARNING: Model might have started overfitting. Consider reducing epochs or increasing regularization.")
-            
-            # Calculate overall improvement
-            initial_val_ppl = val_ppl_history[1] if len(val_ppl_history) > 1 else float('inf')
-            ppl_improvement = initial_val_ppl - best_val_ppl
-            ppl_improvement_pct = (ppl_improvement / initial_val_ppl) * 100 if initial_val_ppl != float('inf') else 0
-            
-            print(f"Initial validation PPL: {initial_val_ppl:.2f}")
-            print(f"Best validation PPL: {best_val_ppl:.2f}")
-            print(f"Overall improvement: {ppl_improvement:.2f} ({ppl_improvement_pct:.1f}%)")
+        # Load best model
+        self.load_checkpoint(best_model_path)
+        
+        # Plot final training curves
+        self._plot_training_curves()
+        
+        # Generate final sample
+        print(f"\n===== Final Tang poem generation example =====")
+        # Use correct parameter form to call generation method
+        self._generate_sample(epoch=epoch, num_samples=2, max_length=None, poem_types=['5', '7'])
+        print(f"===== Generation ended =====\n")
         
         return best_model_path
     
@@ -440,17 +407,15 @@ class Trainer:
                     
     def _train_epoch(self, train_loader, epoch, grad_accum_steps=1):
         """
-        Train for one epoch with advanced techniques
+        Train for one epoch
         
         Args:
-            train_loader: Training data loader
+            train_loader: DataLoader
             epoch: Current epoch number
-            grad_accum_steps: Number of steps to accumulate gradients before updating weights
+            grad_accum_steps: Number of steps to accumulate gradients
             
         Returns:
-            train_loss: Average training loss for this epoch
-            train_ppl: Training perplexity for this epoch
-            accuracy: Training accuracy for this epoch
+            tuple: (train_loss, train_ppl, train_accuracy)
         """
         self.model.train()
         total_loss = 0
@@ -458,143 +423,192 @@ class Trainer:
         total_tokens = 0
         start_time = time.time()
         
-        # Initialize mixed precision training if available
-        use_amp = hasattr(self.args, 'use_amp') and self.args.use_amp and torch.cuda.is_available()
-        scaler = torch.amp.GradScaler('cuda') if use_amp else None
+        optimizer = self.optimizer
+        criterion = self.criterion
+        device = next(self.model.parameters()).device
         
-        # Create progress bar
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{self.args.epochs} Training")
+        # Use tqdm progress bar
+        progress_bar = tqdm(train_loader, desc=f'Epoch {epoch}/{self.args.epochs} Training')
         
-        # Track batch-level metrics for better monitoring
+        # For calculating accuracy
+        true_predictions = 0
+        all_predictions = 0
+        
+        # Track loss, accuracy, and perplexity for each batch
         batch_losses = []
-        batch_ppls = []
         batch_accs = []
+        batch_ppls = []
         
-        # Initialize gradient accumulation counter
-        accum_step = 0
+        # Reset optimizer gradients
+        optimizer.zero_grad()
         
-        for batch_idx, batch in enumerate(pbar):
-            # Get input and target
-            data = batch['input'].to(self.device)
-            targets = batch['target'].to(self.device)
+        # Randomly drop 10% of batches, increase training noise
+        drop_batch_prob = 0.1
+        
+        # Apply L2 regularization to recently updated parameters of larger magnitude every epoch start
+        if hasattr(self, 'param_update_magnitudes') and epoch > 1:
+            largest_updates = sorted(self.param_update_magnitudes.items(), key=lambda x: x[1], reverse=True)[:10]
+            for name, _ in largest_updates:
+                for n, p in self.model.named_parameters():
+                    if n == name and p.requires_grad:
+                        # Extra L2 regularization for these parameters
+                        p.data *= (1 - 0.01)  # Mildly decay
             
-            # Only zero gradients when starting a new accumulation cycle
-            if accum_step == 0:
-                self.optimizer.zero_grad()
-            
-            # Mixed precision forward pass
-            if use_amp:
-                with torch.amp.autocast('cuda'):
-                    output, _ = self.model(data)
-                    
-                    # Reshape output and targets for loss calculation
-                    output = output.view(-1, self.vocab_size)
-                    targets = targets.view(-1)
-                    
-                    # Calculate loss with label smoothing if enabled
-                    if self.criterion:
-                        loss = self.criterion(output, targets)
-                    else:
-                        loss = F.cross_entropy(output, targets, ignore_index=0)
+        # Track update magnitude for each parameter
+        self.param_update_magnitudes = defaultdict(float)
+        
+        for batch_idx, batch in enumerate(progress_bar):
+            # Randomly drop batch to increase training noise
+            if random.random() < drop_batch_prob and epoch > 10:
+                continue
                 
-                # Scale loss and perform backward pass
-                scaled_loss = loss / grad_accum_steps  # Normalize loss
-                scaler.scale(scaled_loss).backward()
+            # Move data to device
+            inputs = batch['input'].to(device)
+            targets = batch['target'].to(device)
+            
+            # Apply different data augmentation strategies
+            if hasattr(self.args, 'data_augmentation') and self.args.data_augmentation and random.random() < 0.3:
+                # Randomly mask part of input (10-15%)
+                mask_prob = random.uniform(0.1, 0.15)
+                mask = (torch.rand_like(inputs, dtype=torch.float) < mask_prob).to(device)
+                # Use a special index value as mask marker (usually 0 or for padding)
+                inputs = inputs.masked_fill(mask, 0)
+            
+            with autocast(enabled=self.use_amp):
+                # Forward pass
+                outputs, hidden = self.model(inputs)
+                
+                # Calculate loss
+                loss = criterion(outputs.view(-1, outputs.size(-1)), targets.view(-1))
+                
+                # If label smoothing is used, no additional regularization loss is needed
+                if not hasattr(self.args, 'label_smoothing') or self.args.label_smoothing <= 0:
+                    # Add additional regularization loss
+                    l2_reg = 0.0
+                    for name, param in self.model.named_parameters():
+                        if 'weight' in name and param.requires_grad:
+                            l2_reg += torch.norm(param, p=2)
+                    
+                    alpha = 1e-4  # Regularization strength
+                    loss += alpha * l2_reg
+                
+                # Scale loss to adapt to gradient accumulation
+                loss = loss / grad_accum_steps
+            
+            # Backward pass
+            if self.use_amp:
+                self.scaler.scale(loss).backward()
             else:
-                # Standard forward pass
-                output, _ = self.model(data)
-                
-                # Reshape output and targets for loss calculation
-                output = output.view(-1, self.vocab_size)
-                targets = targets.view(-1)
-                
-                # Calculate loss with label smoothing if enabled
-                if self.criterion:
-                    loss = self.criterion(output, targets)
+                loss.backward()
+            
+            # Record unscaled loss
+            unscaled_loss = loss.item() * grad_accum_steps
+            total_loss += unscaled_loss
+            
+            # Calculate accuracy and perplexity
+            _, predicted = outputs.max(dim=2)
+            correct = (predicted == targets).sum().item()
+            tokens = targets.ne(self.pad_idx).sum().item()
+            
+            # Accumulate statistics
+            true_predictions += correct
+            all_predictions += tokens
+            total_correct += correct
+            total_tokens += tokens
+            
+            # Calculate batch accuracy and perplexity
+            accuracy = 100 * (true_predictions / max(1, all_predictions))
+            ppl = calculate_perplexity(total_loss / (batch_idx + 1))
+            
+            # Gradient accumulation
+            if (batch_idx + 1) % grad_accum_steps == 0 or (batch_idx + 1) == len(train_loader):
+                # Handle based on whether mixed precision training is used
+                if self.use_amp:
+                    # Handle gradient clipping and update for mixed precision training
+                    if self.grad_clip > 0:
+                        # First unscale, ensure only called once
+                        self.scaler.unscale_(optimizer)
+                        
+                        # Apply progressive gradient centralization (if enabled)
+                        if self.grad_centralization and (batch_idx + 1) % 3 == 0:
+                            self._apply_gradient_centralization(self.model.parameters())
+                        
+                        # Calculate gradient norm and clip
+                        grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+                        
+                        # Detect and handle unhealthy gradients
+                        if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+                            print(f"Warning: Bad gradient norm detected: {grad_norm}. Skipping this batch.")
+                            optimizer.zero_grad()
+                            continue
+                    
+                    # Execute optimizer step and update scaler
+                    self.scaler.step(optimizer)
+                    self.scaler.update()
                 else:
-                    loss = F.cross_entropy(output, targets, ignore_index=0)
+                    # Handle gradient clipping and update for non-mixed precision training
+                    if self.grad_clip > 0:
+                        # Apply gradient centralization (if enabled)
+                        if self.grad_centralization and (batch_idx + 1) % 3 == 0:
+                            self._apply_gradient_centralization(self.model.parameters())
+                        
+                        # Calculate gradient norm and clip
+                        grad_norm = nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+                        
+                        # Detect unhealthy gradients
+                        if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+                            print(f"Warning: Bad gradient norm detected: {grad_norm}. Skipping this batch.")
+                            optimizer.zero_grad()
+                            continue
+                    
+                    # Execute optimizer step
+                    optimizer.step()
                 
-                # Normalize loss for gradient accumulation
-                scaled_loss = loss / grad_accum_steps
-                scaled_loss.backward()
-            
-            # Update statistics
-            total_loss += loss.item()
-            
-            # Calculate accuracy
-            with torch.no_grad():
-                _, predicted = torch.max(output, 1)
-                mask = targets != 0  # Ignore padding tokens
-                correct = (predicted == targets) & mask
-                total_correct += correct.sum().item()
-                total_tokens += mask.sum().item()
-            
-            # Track batch-level metrics
-            batch_loss = loss.item()
-            batch_losses.append(batch_loss)
-            batch_ppl = math.exp(min(batch_loss, 20))  # Cap at 20 to avoid overflow
-            batch_ppls.append(batch_ppl)
-            
-            batch_acc = 100 * (correct.sum().item() / mask.sum().item() if mask.sum().item() > 0 else 0)
-            batch_accs.append(batch_acc)
-            
-            # Update progress bar with smoothed metrics
-            recent_batches = 10  # Use last 10 batches for smoothing
-            smooth_loss = sum(batch_losses[-recent_batches:]) / min(recent_batches, len(batch_losses))
-            smooth_ppl = sum(batch_ppls[-recent_batches:]) / min(recent_batches, len(batch_ppls))
-            smooth_acc = sum(batch_accs[-recent_batches:]) / min(recent_batches, len(batch_accs))
-            
-            pbar.set_postfix(loss=f"{smooth_loss:.2f}", ppl=f"{smooth_ppl:.2f}", acc=f"{smooth_acc:.2f}%")
-            
-            # Increment accumulation step
-            accum_step += 1
-            
-            # Update weights if we've accumulated enough gradients
-            if accum_step == grad_accum_steps or batch_idx == len(train_loader) - 1:
-                # Gradient clipping
-                if self.args.grad_clip > 0:
-                    if use_amp:
-                        # Unscale before clipping
-                        scaler.unscale_(self.optimizer)
-                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
-                    else:
-                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.args.grad_clip)
+                # Track update magnitude for each parameter
+                with torch.no_grad():
+                    for name, param in self.model.named_parameters():
+                        if param.grad is not None:
+                            update_magnitude = torch.norm(param.grad * optimizer.param_groups[0]['lr'], p=2).item()
+                            self.param_update_magnitudes[name] += update_magnitude
                 
-                # Update weights
-                if use_amp:
-                    scaler.step(self.optimizer)
-                    scaler.update()
-                else:
-                    self.optimizer.step()
+                # Update EMA model (if enabled)
+                if self.use_ema:
+                    self._update_ema_model()
                 
-                # Reset accumulation counter
-                accum_step = 0
+                optimizer.zero_grad()  # Reset gradients
             
-            # Log training progress at intervals
-            if (batch_idx + 1) % self.args.log_interval == 0:
-                avg_loss = total_loss / (batch_idx + 1)
-                ppl = math.exp(min(avg_loss, 20))  # Cap at 20 to avoid overflow
-                accuracy = 100 * (total_correct / total_tokens if total_tokens > 0 else 0)
-                
-                print(f"Epoch {epoch}/{self.args.epochs} | Batch {batch_idx + 1}/{len(train_loader)} | "
-                      f"LR: {self.optimizer.param_groups[0]['lr']:.6f} | "
-                      f"Loss: {avg_loss:.4f} | PPL: {ppl:.2f} | Acc: {accuracy:.2f}%")
+            # Collect current batch statistics
+            batch_losses.append(unscaled_loss)
+            batch_accs.append(accuracy)
+            batch_ppls.append(ppl)
+            
+            # Update progress bar
+            progress_bar.set_postfix({
+                'acc': f"{accuracy:.2f}%", 
+                'loss': f"{unscaled_loss:.2f}", 
+                'ppl': f"{ppl:.2f}"
+            })
+            
+            # Record interval
+            if (batch_idx + 1) % self.log_interval == 0:
+                curr_lr = optimizer.param_groups[0]['lr']
+                curr_wd = optimizer.param_groups[0]['weight_decay']
+                print(f"\nEpoch {epoch}/{self.args.epochs} | Batch {batch_idx+1}/{len(train_loader)} | "
+                      f"LR: {curr_lr:.6f} | WD: {curr_wd:.6f} | "
+                      f"Loss: {unscaled_loss:.4f} | PPL: {ppl:.2f} | Acc: {accuracy:.2f}%")
         
-        # Calculate final statistics
+        # Calculate overall epoch statistics
         avg_loss = total_loss / len(train_loader)
-        ppl = math.exp(min(avg_loss, 20))  # Cap at 20 to avoid overflow
-        accuracy = 100 * (total_correct / total_tokens if total_tokens > 0 else 0)
+        avg_ppl = calculate_perplexity(avg_loss)
+        accuracy = 100 * (total_correct / max(1, total_tokens))
         
-        # Update EMA model after each epoch
-        self._update_ema_model()
+        # Close progress bar
+        progress_bar.close()
         
-        # Print epoch summary
-        end_time = time.time()
-        epoch_mins, epoch_secs = epoch_time(start_time, end_time)
-        print(f"Epoch {epoch}/{self.args.epochs} | Time: {epoch_mins}m {epoch_secs}s | "
-              f"Train Loss: {avg_loss:.4f} | Train PPL: {ppl:.2f} | Train Acc: {accuracy:.2f}%")
+        print(f"Epoch {epoch}/{self.args.epochs} | Time: {epoch_time(start_time, time.time())} | "
+              f"Train Loss: {avg_loss:.4f} | Train PPL: {avg_ppl:.2f} | Train Acc: {accuracy:.2f}%")
         
-        return avg_loss, ppl, accuracy
+        return avg_loss, avg_ppl, accuracy
     
     def evaluate(self, val_loader):
         """
@@ -731,8 +745,74 @@ class Trainer:
         
         # Calculate average loss and metrics
         avg_loss = total_loss / max(1, len(val_loader))
-        perplexity = math.exp(min(avg_loss, 20))  # Cap at 20 to avoid overflow
-        accuracy = 100 * (total_correct / total_tokens if total_tokens > 0 else 0)
+        
+        # Use improved perplexity calculation method to prevent extreme values
+        try:
+            if avg_loss > 20:
+                # For losses greater than 20, use scaling method to avoid exponential explosion
+                scaled_loss = 20.0 + math.log(1 + (avg_loss - 20.0))
+                perplexity = math.exp(scaled_loss)
+                print(f"Warning: High loss value ({avg_loss:.4f}), scaled perplexity calculation")
+            else:
+                perplexity = math.exp(avg_loss)
+        except OverflowError:
+            perplexity = 1e4  # Set a large but finite value
+            print("Warning: Perplexity calculation overflow, set to upper limit")
+        
+        # Calculate accuracy - Ensure denominator is not zero
+        if total_tokens > 0:
+            accuracy = 100 * (total_correct / total_tokens)
+        else:
+            accuracy = 0.0
+            print("Warning: Evaluation sample count is zero")
+        
+        # Calculate accuracy for each position
+        if position_total:
+            positions = sorted(position_total.keys())
+            pos_accs = []
+            
+            for p in positions:
+                if position_total[p] > 0:
+                    pos_acc = 100 * position_correct[p] / position_total[p]
+                    pos_accs.append(pos_acc)
+                else:
+                    pos_accs.append(0)
+                    
+            avg_pos_acc = sum(pos_accs) / len(pos_accs) if pos_accs else 0
+            min_pos_acc = min(pos_accs) if pos_accs else 0
+            max_pos_acc = max(pos_accs) if pos_accs else 0
+            
+            # Check position-related accuracy degradation
+            early_pos = [p for p in positions if p < len(positions) // 2]
+            late_pos = [p for p in positions if p >= len(positions) // 2]
+            
+            # Ensure denominator is not zero
+            early_acc = 0
+            if early_pos:
+                early_accs = []
+                for p in early_pos:
+                    if position_total[p] > 0:
+                        early_accs.append(100 * position_correct[p] / position_total[p])
+                    else:
+                        early_accs.append(0)
+                early_acc = sum(early_accs) / len(early_accs)
+                
+            late_acc = 0
+            if late_pos:
+                late_accs = []
+                for p in late_pos:
+                    if position_total[p] > 0:
+                        late_accs.append(100 * position_correct[p] / position_total[p])
+                    else:
+                        late_accs.append(0)
+                late_acc = sum(late_accs) / len(late_accs)
+            
+            pos_degradation = early_acc - late_acc
+        else:
+            avg_pos_acc = 0
+            min_pos_acc = 0
+            max_pos_acc = 0
+            pos_degradation = 0
         
         # Analyze prediction confidence
         if confidence_scores:
@@ -774,28 +854,6 @@ class Trainer:
         end_time = time.time()
         eval_mins, eval_secs = epoch_time(start_time, end_time)
         
-        # Analyze position-dependent accuracy if there is data
-        if position_total:
-            positions = sorted(position_total.keys())
-            pos_accs = [100 * position_correct[p] / position_total[p] if position_total[p] > 0 else 0 for p in positions]
-            avg_pos_acc = sum(pos_accs) / len(pos_accs) if pos_accs else 0
-            min_pos_acc = min(pos_accs) if pos_accs else 0
-            max_pos_acc = max(pos_accs) if pos_accs else 0
-            
-            # Check for position-dependent degradation
-            early_pos = [p for p in positions if p < len(positions) // 2]
-            late_pos = [p for p in positions if p >= len(positions) // 2]
-            
-            early_acc = sum([100 * position_correct[p] / position_total[p] if position_total[p] > 0 else 0 for p in early_pos]) / len(early_pos) if early_pos else 0
-            late_acc = sum([100 * position_correct[p] / position_total[p] if position_total[p] > 0 else 0 for p in late_pos]) / len(late_pos) if late_pos else 0
-            
-            pos_degradation = early_acc - late_acc
-        else:
-            avg_pos_acc = 0
-            min_pos_acc = 0
-            max_pos_acc = 0
-            pos_degradation = 0
-        
         # Print comprehensive validation summary
         print(f"Validation | Time: {eval_mins}m {eval_secs}s | Loss: {avg_loss:.4f} | PPL: {perplexity:.2f} | Acc: {accuracy:.2f}%")
         print(f"Confidence | Correct: {avg_conf_correct:.4f} | Incorrect: {avg_conf_incorrect:.4f} | Gap: {confidence_gap:.4f} | ECE: {ece:.4f}")
@@ -803,13 +861,27 @@ class Trainer:
         
         # Record train vs. validation ratio for overfitting detection
         if hasattr(self, 'train_losses') and self.train_losses and hasattr(self, 'train_val_loss_ratio_history'):
-            train_val_ratio = self.train_losses[-1] / avg_loss if avg_loss > 0 else 1.0
+            # Ensure safe calculation ratio
+            if len(self.train_losses) > 0 and avg_loss > 0:
+                train_val_ratio = self.train_losses[-1] / avg_loss
+                # Limit abnormal values
+                if train_val_ratio > 10.0:
+                    train_val_ratio = 10.0
+                    print("Warning: Training/Validation loss ratio abnormal large, limited to 10.0")
+                elif train_val_ratio < 0.1:
+                    train_val_ratio = 0.1
+                    print("Warning: Training/Validation loss ratio abnormal small, limited to 0.1")
+            else:
+                train_val_ratio = 1.0  # Default value
+
             self.train_val_loss_ratio_history.append(train_val_ratio)
             
             # Update statistics
             self.min_train_val_ratio = min(self.min_train_val_ratio, train_val_ratio)
             if len(self.train_val_loss_ratio_history) >= 5:
                 self.avg_train_val_ratio = sum(self.train_val_loss_ratio_history[-5:]) / 5
+            else:
+                self.avg_train_val_ratio = sum(self.train_val_loss_ratio_history) / len(self.train_val_loss_ratio_history)
                 
             print(f"Train/Val Loss Ratio: {train_val_ratio:.4f} (Min: {self.min_train_val_ratio:.4f}, Avg: {self.avg_train_val_ratio:.4f})")
         
@@ -817,84 +889,126 @@ class Trainer:
     
     def _plot_training_curves(self):
         """
-        Plot training curves
+        Plot training curves for loss, perplexity and accuracy
         """
-        plt.figure(figsize=(15, 10))
+        if not self.train_losses or not self.val_losses:
+            return
+
+        # Create output directory if not exists
+        plots_dir = os.path.join(self.output_dir, 'plots')
+        if not os.path.exists(plots_dir):
+            os.makedirs(plots_dir)
+            
+        # Create figure with 3 subplots
+        fig, axs = plt.subplots(3, 1, figsize=(10, 15))
+        epochs = list(range(1, len(self.train_losses) + 1))
         
         # Plot loss
-        plt.subplot(2, 2, 1)
-        plt.plot(self.train_losses, label='Train Loss')
-        plt.plot(self.val_losses, label='Validation Loss')
-        plt.xlabel('Epoch')
-        plt.ylabel('Loss')
-        plt.title('Training and Validation Loss')
-        plt.legend()
-        plt.grid(True)
+        axs[0].plot(epochs, self.train_losses, 'b-', label='Training')
+        axs[0].plot(epochs, self.val_losses, 'r-', label='Validation')
+        axs[0].set_title(f'{self.args.model_type} Model - Loss')
+        axs[0].set_xlabel('Epoch')
+        axs[0].set_ylabel('Loss')
+        axs[0].legend()
+        axs[0].grid(True)
         
         # Plot perplexity
-        plt.subplot(2, 2, 2)
-        plt.plot(self.train_ppls, label='Train Perplexity')
-        plt.plot(self.val_ppls, label='Validation Perplexity')
-        plt.xlabel('Epoch')
-        plt.ylabel('Perplexity')
-        plt.title('Training and Validation Perplexity')
-        plt.legend()
-        plt.grid(True)
+        axs[1].plot(epochs, self.train_ppls, 'b-', label='Training')
+        axs[1].plot(epochs, self.val_ppls, 'r-', label='Validation')
+        axs[1].set_title(f'{self.args.model_type} Model - Perplexity')
+        axs[1].set_xlabel('Epoch')
+        axs[1].set_ylabel('Perplexity')
+        axs[1].legend()
+        axs[1].grid(True)
         
-        # Plot learning rate
-        plt.subplot(2, 2, 3)
-        plt.plot(self.learning_rates)
-        plt.xlabel('Epoch')
-        plt.ylabel('Learning Rate')
-        plt.title('Learning Rate Schedule')
-        plt.grid(True)
+        # Plot accuracy
+        axs[2].plot(epochs, self.train_accs, 'b-', label='Training')
+        axs[2].plot(epochs, self.val_accs, 'r-', label='Validation')
+        axs[2].set_title(f'{self.args.model_type} Model - Accuracy')
+        axs[2].set_xlabel('Epoch')
+        axs[2].set_ylabel('Accuracy (%)')
+        axs[2].legend()
+        axs[2].grid(True)
         
-        # Save figure
+        # Adjust layout and save figure
         plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, f"{self.args.model_type}_training_curves.png"))
+        plt.savefig(os.path.join(plots_dir, f'{self.args.model_type}_training_curves.png'))
         plt.close()
     
-    def _generate_sample(self, epoch, num_samples=1, max_length=None):
+    def _generate_sample(self, epoch, num_samples=1, max_length=None, poem_types=None):
         """
-        Generate sample text during training
+        Generate Tang poem sample for evaluation during training
         
         Args:
-            epoch: Current epoch number
+            epoch: Current training round
             num_samples: Number of samples to generate
             max_length: Maximum generation length
+            poem_types: List of specified poem types, can be '5' or '7'
         """
         self.model.eval()
         
+        # For Tang poem, usually shorter length is more suitable
         if max_length is None:
-            max_length = min(100, self.args.generate_length)  # Generate shorter samples during training
+            max_length = min(150, self.args.generate_length)
             
-        print("\nGenerating sample text:")
+        print("Generating Tang poem example:")
         
-        # Use <BOS> token as starting character
+        # If no specified poem type, default to generating both five-character and seven-character poems
+        if poem_types is None:
+            poem_types = ['5', '7']
+        elif isinstance(poem_types, str):
+            poem_types = [poem_types]  # Ensure it's list type
+            
+        # Use <BOS> as starting marker
         if '<BOS>' in self.char_to_idx:
             start_idx = self.char_to_idx['<BOS>']
             
+            # Set different temperature parameters, lower temperature more conservative, higher temperature more creative
+            temperatures = [0.6, 0.8, 1.0]
+            
             for i in range(num_samples):
-                # Create initial sequence
-                initial_seq = torch.tensor([[start_idx]], dtype=torch.long)
-                
-                # Generate text with different sampling strategies
-                temps = [0.8, 1.2]  # Different sampling temperatures
-                for temp in temps:
-                    # Generate text
-                    generated_text = self.model.generate(
-                        initial_seq,
-                        max_length,
-                        self.device,
-                        temperature=temp,
-                        idx_to_char=self.idx_to_char,
-                        top_p=0.9,  # Use nucleus sampling
-                        char_to_idx=self.char_to_idx
-                    )
+                # Generate for each poem type
+                for poem_type in poem_types:
+                    print(f"\nSample {i+1} [{poem_type}言诗]:")
                     
-                    print(f"Sample {i+1} [temperature={temp}]:\n{generated_text}\n")
+                    # Use different temperatures to generate different styles of Tang poem
+                    for temp_idx, temp in enumerate(temperatures):
+                        try:
+                            # Create initial sequence - Recreate each loop to avoid dimension problem
+                            initial_seq = torch.tensor([[start_idx]], dtype=torch.long)
+                            
+                            # Generate text
+                            generated_text = self.model.generate(
+                                initial_seq,
+                                max_length,
+                                self.device,
+                                temperature=temp,
+                                idx_to_char=self.idx_to_char,
+                                top_p=0.9,  # Use nucleus sampling
+                                char_to_idx=self.char_to_idx,
+                                poem_type=poem_type  # Specify poem type
+                            )
+                            
+                            # Analyze poem format
+                            lines = generated_text.strip().split('\n')
+                            non_empty_lines = [line for line in lines if line.strip()]
+                            
+                            if non_empty_lines:
+                                print(f"\nTemperature={temp:.1f}:")
+                                
+                                # Output according to original data format, no line numbers
+                                for line in non_empty_lines:
+                                    print(line)
+                            else:
+                                print(f"\nTemperature={temp:.1f}: (Model has not generated valid poem yet)")
+                            
+                            if temp_idx < len(temperatures) - 1:
+                                print()  # Add blank line between temperatures
+                                
+                        except Exception as e:
+                            print(f"\nTemperature={temp:.1f}: Generation process error ({str(e)})")
         else:
-            print("Cannot generate samples: <BOS> token missing from vocabulary.")
+            print("Cannot generate sample: <BOS> token missing from vocabulary.")
     
     def generate_text(self, seed_text=None, max_length=None, temperature=1.0, top_k=0, top_p=0.9):
         """
@@ -1109,32 +1223,6 @@ class Trainer:
             'val_ppl': val_ppl,
             'args': vars(self.args) if hasattr(self.args, '__dict__') else self.args
         }, checkpoint_path)
-    
-    def _get_optimizer_grouped_parameters(self, weight_decay):
-        """
-        Get grouped parameters for optimizer with proper weight decay exclusions.
-        Layernorm parameters and bias terms should not have weight decay applied.
-        
-        Args:
-            weight_decay: Weight decay factor
-            
-        Returns:
-            List of parameter groups with appropriate weight decay settings
-        """
-        no_decay = ['bias', 'LayerNorm.weight', 'layernorm.weight', 'layer_norm.weight']
-        optimizer_grouped_parameters = [
-            {
-                'params': [p for n, p in self.model.named_parameters() 
-                          if not any(nd in n for nd in no_decay) and p.requires_grad],
-                'weight_decay': weight_decay
-            },
-            {
-                'params': [p for n, p in self.model.named_parameters() 
-                          if any(nd in n for nd in no_decay) and p.requires_grad],
-                'weight_decay': 0.0
-            }
-        ]
-        return optimizer_grouped_parameters
     
     def _apply_gradient_centralization(self, parameters):
         """

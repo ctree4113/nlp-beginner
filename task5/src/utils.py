@@ -98,59 +98,45 @@ def count_parameters(model):
     return params_count
 
 
-def calculate_perplexity(loss):
+def calculate_perplexity(loss_value):
     """
-    Calculate perplexity from loss 
+    Calculate perplexity from loss
     
     Args:
-        loss: Cross entropy loss
+        loss_value: Loss value
         
     Returns:
-        perplexity: Perplexity value (clipped if necessary)
+        float: Perplexity
     """
-    try:
-        # 转换输入为Python浮点数
-        if isinstance(loss, torch.Tensor):
-            loss_value = loss.item()
-        else:
-            loss_value = float(loss)
-        
-        # 检查无效值
-        if math.isnan(loss_value) or loss_value < 0:
-            print(f"警告: 损失值无效 ({loss_value})，返回最大困惑度值")
-            return 10000.0  # 返回一个大但有限的值
-        
-        # 防止数值溢出，设置一个合理的上限
-        if loss_value > 20:  # ln(10000) ≈ 9.21，设置更低的阈值以保留一些区分度
-            print(f"警告: 损失值过大 ({loss_value:.4f})，限制困惑度计算")
-            # 采用渐进缩放方法来保留一些梯度信息
-            # 当loss > 20时，使用对数缩放来避免指数爆炸
-            scaled_loss = 20.0 + math.log(1 + (loss_value - 20.0)) 
-            perplexity = math.exp(scaled_loss)
-            print(f"原损失值 {loss_value:.4f} 缩放为 {scaled_loss:.4f}，困惑度: {perplexity:.2f}")
-            return perplexity
-            
-        # 正常情况
-        return math.exp(loss_value)
-        
-    except (OverflowError, ValueError) as e:
-        print(f"错误: 计算困惑度时发生异常: {e}")
-        print(f"损失值: {loss}")
-        # 返回一个大但有限的值，而不是无穷大，以便训练能够继续
-        return 10000.0
+    # Convert input to Python float
+    if isinstance(loss_value, torch.Tensor):
+        loss_value = loss_value.item()
+    
+    # Check for invalid values
+    if math.isnan(loss_value) or math.isinf(loss_value) or loss_value < 0:
+        print(f"Warning: Invalid loss value ({loss_value}), returning maximum perplexity value")
+        return 10000.0  # Return a large but finite value
+    
+    # Prevent numerical overflow, set a reasonable upper limit
+    if loss_value > 20:  # ln(10000) ≈ 9.21, set a lower threshold to preserve some distinctiveness
+        print(f"Warning: Loss value too large ({loss_value:.4f}), limiting perplexity calculation")
+        # Use a progressive scaling method to preserve some gradient information
+        return math.exp(20) * (loss_value - 20 + 1)
+    
+    # Normal perplexity calculation
+    return math.exp(loss_value)
 
 
 def epoch_time(start_time, end_time):
     """
-    Calculate time elapsed for an epoch
+    Calculate time taken for one epoch
     
     Args:
         start_time: Start time
         end_time: End time
         
     Returns:
-        elapsed_mins: Minutes elapsed
-        elapsed_secs: Seconds elapsed
+        tuple: Minutes and seconds
     """
     elapsed_time = end_time - start_time
     elapsed_mins = int(elapsed_time / 60)

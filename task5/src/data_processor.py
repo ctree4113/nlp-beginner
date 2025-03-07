@@ -1,6 +1,5 @@
 import os
 import torch
-import numpy as np
 from torch.utils.data import Dataset, DataLoader
 import random
 import json
@@ -330,6 +329,7 @@ class DataProcessor:
         
         # Add special tokens
         processed_poems = []
+        skipped_poems = 0
         for poem in poems:
             # Filter non-Chinese characters
             filtered_poem = ''.join(c for c in poem if is_valid_char(c))
@@ -338,29 +338,51 @@ class DataProcessor:
             lines = filtered_poem.split('\n')
             lines = [line.strip() for line in lines if line.strip()]
             
-            # Build poem with markers
-            processed_poem = '<BOS>' + '\n<LINE>'.join(lines) + '<EOS>'
+            # 跳过过短的诗句
+            if len(lines) < 2:
+                skipped_poems += 1
+                continue
+                
+            # 过滤并规范化诗句
+            # 唐诗通常为五言或七言，每首四句或八句
+            standardized_lines = []
+            line_lengths = []
+            
+            for line in lines:
+                # 如果行太长，可能需要分割
+                # 移除行中的标点符号计算实际字数
+                line_chars = ''.join(c for c in line if '\u4e00' <= c <= '\u9fff')
+                line_lengths.append(len(line_chars))
+                standardized_lines.append(line)
+            
+            # 如果诗句长度不一致，跳过不规则的诗
+            if len(set(line_lengths)) > 1 and max(line_lengths) - min(line_lengths) > 2:
+                skipped_poems += 1
+                continue
+                
+            # 规范化为四行或八行诗
+            # 如果行数在3-5之间，填充或截断为四行
+            # 如果行数在6-9之间，填充或截断为八行
+            if 3 <= len(standardized_lines) <= 5:
+                target_lines = 4
+            elif 6 <= len(standardized_lines) <= 9:
+                target_lines = 8
+            else:
+                # 行数太多或太少，使用原始行数
+                target_lines = len(standardized_lines)
+            
+            # 填充或截断行数
+            if len(standardized_lines) > target_lines:
+                standardized_lines = standardized_lines[:target_lines]
+            
+            # 构建诗歌文本
+            processed_poem = '<BOS>' + '<LINE>'.join(standardized_lines) + '<EOS>'
             processed_poems.append(processed_poem)
         
-        # Recombine text
-        processed_text = '\n\n'.join(processed_poems)
+        print(f"Processed {len(processed_poems)} poems, skipped {skipped_poems} irregular poems")
         
-        # Replace rare characters if needed
-        if hasattr(self.args, 'replace_rare') and self.args.replace_rare:
-            # Calculate character frequency
-            char_freq = {}
-            for c in processed_text:
-                char_freq[c] = char_freq.get(c, 0) + 1
-                
-            # Determine rare characters based on threshold
-            rare_thresh = getattr(self.args, 'rare_threshold', 5)
-            rare_chars = {c for c, freq in char_freq.items() if freq < rare_thresh}
-            
-            # Replace rare characters with <UNK>
-            for c in rare_chars:
-                processed_text = processed_text.replace(c, '<UNK>')
-                
-            print(f"Replaced {len(rare_chars)} rare characters with <UNK>")
+        # 重新组合文本 - 使用换行符重新连接保持原有格式
+        processed_text = '\n\n'.join(processed_poems)
         
         return processed_text
     

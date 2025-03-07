@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import math
 from data_processor import DataProcessor
-from models import RNNModel, TransformerModel
+from models import RNNModel
 from trainer import Trainer
 from utils import set_seed, print_args, count_parameters, epoch_time
 
@@ -16,7 +16,7 @@ def train_model(args, model_type):
     
     Args:
         args: Command line arguments
-        model_type: Model type (LSTM, GRU or Transformer)
+        model_type: Model type (LSTM or GRU)
         
     Returns:
         tuple: (test_loss, test_ppl, best_model_path)
@@ -42,29 +42,19 @@ def train_model(args, model_type):
     
     # Create model
     print(f"Creating {model_type} model...")
-    if model_type == 'Transformer':
-        model = TransformerModel(
-            vocab_size=vocab_size,
-            embedding_dim=args.embedding_dim,
-            hidden_dim=args.hidden_dim,
-            num_layers=args.num_layers,
-            nhead=args.nhead,
-            dropout=args.dropout
-        )
-    else:  # LSTM or GRU
-        model = RNNModel(
-            vocab_size=vocab_size,
-            embedding_dim=args.embedding_dim,
-            hidden_dim=args.hidden_dim,
-            num_layers=args.num_layers,
-            dropout=args.dropout,
-            model_type=model_type,
-            tie_weights=args.tie_weights,
-            use_layer_norm=args.use_layer_norm,
-            use_residual=args.use_residual,
-            bidirectional=args.bidirectional,
-            use_attention=args.use_attention
-        )
+    model = RNNModel(
+        vocab_size=vocab_size,
+        embedding_dim=args.embedding_dim,
+        hidden_dim=args.hidden_dim,
+        num_layers=args.num_layers,
+        dropout=args.dropout,
+        model_type=model_type,
+        tie_weights=args.tie_weights,
+        use_layer_norm=args.use_layer_norm,
+        use_residual=args.use_residual,
+        bidirectional=args.bidirectional,
+        use_attention=args.use_attention
+    )
     
     # Print model parameters
     total_params = sum(p.numel() for p in model.parameters())
@@ -148,13 +138,14 @@ def train_model(args, model_type):
 
 def run_experiment_model_comparison(args):
     """
-    Run experiment to compare LSTM, GRU and Transformer models
+    Run experiment to compare LSTM and GRU models
     
     Args:
         args: Command line arguments
     """
+    # Print header
     print("\n" + "=" * 60)
-    print("EXPERIMENT: Model Type Comparison")
+    print("EXPERIMENT: Model Comparison (LSTM vs GRU)")
     print("=" * 60)
     
     # Store results
@@ -162,8 +153,6 @@ def run_experiment_model_comparison(args):
     
     # Define model types to compare
     model_types = ['LSTM', 'GRU']
-    if args.include_transformer:
-        model_types.append('Transformer')
     
     # Train and evaluate each model type
     for model_type in model_types:
@@ -253,7 +242,7 @@ def parse_args():
     
     # Model parameters
     parser.add_argument('--model_type', type=str, default='LSTM',
-                        choices=['LSTM', 'GRU', 'Transformer'],
+                        choices=['LSTM', 'GRU'],
                         help='Model type')
     parser.add_argument('--embedding_dim', type=int, default=256,
                         help='Embedding dimension')
@@ -273,8 +262,6 @@ def parse_args():
                         help='Use bidirectional RNN')
     parser.add_argument('--use_attention', action='store_true',
                         help='Use attention mechanism')
-    parser.add_argument('--nhead', type=int, default=8,
-                        help='Number of attention heads (Transformer only)')
     
     # Training parameters
     parser.add_argument('--epochs', type=int, default=20,
@@ -346,8 +333,6 @@ def main():
     # Run experiment or train single model
     if args.experiment == 'model_comparison':
         run_experiment_model_comparison(args)
-    elif args.experiment == 'hyperparameter_search':
-        run_experiment_hyperparameter_search(args)
     else:
         train_model(args, args.model_type)
     
